@@ -1,0 +1,14 @@
+﻿node_modules/
+.pnpm-store/
+.turbo/
+.next/
+out/
+__pycache__/
+.pytest_cache/
+.venv/
+.env
+.env.local
+*.pyc
+*.log
+.DS_Store
+

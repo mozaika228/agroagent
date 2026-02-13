@@ -1,0 +1,58 @@
+﻿openapi: 3.0.3
+info:
+  title: AgroAgent API
+  version: 0.3.0
+servers:
+  - url: http://localhost:8000
+paths:
+  /health:
+    get:
+      summary: Health check
+  /v1/auth/register:
+    post:
+      summary: Register user and return JWT token
+  /v1/auth/login:
+    post:
+      summary: Login and return JWT token
+  /v1/auth/me:
+    get:
+      summary: Current user profile
+  /v1/chat/sessions:
+    post:
+      summary: Create chat session
+  /v1/chat/messages:
+    post:
+      summary: Send message to agent pipeline
+  /v1/documents:
+    post:
+      summary: Upload knowledge document (async ingestion job)
+  /v1/documents/{id}:
+    get:
+      summary: Get document status
+  /v1/rag/query:
+    post:
+      summary: Retrieve relevant chunks and generate grounded answer
+  /v1/rag/compare:
+    post:
+      summary: A/B compare retrieval profiles for same query
+  /v1/tools/weather:
+    post:
+      summary: Weather tool
+  /v1/tools/ndvi:
+    post:
+      summary: NDVI proxy from RGB image
+  /v1/evals/run:
+    post:
+      summary: Queue evaluation run
+  /v1/evals:
+    get:
+      summary: List evaluation runs (filter by dataset/model)
+  /v1/evals/{run_id}:
+    get:
+      summary: Get evaluation run details
+  /v1/jobs:
+    get:
+      summary: List background jobs
+  /v1/jobs/{job_id}:
+    get:
+      summary: Get background job status
