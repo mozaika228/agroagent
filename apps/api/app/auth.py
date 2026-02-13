@@ -10,7 +10,9 @@ from .config import settings
 from .db import get_db
 from .models import User
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# Use pbkdf2_sha256 for stable hashing across environments.
+# Keep bcrypt in the context to verify legacy hashes if they exist.
+pwd_context = CryptContext(schemes=["pbkdf2_sha256", "bcrypt"], deprecated="auto")
 bearer = HTTPBearer(auto_error=False)
 
 
