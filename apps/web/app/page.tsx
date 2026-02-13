@@ -2,18 +2,8 @@
 
 import { FormEvent, useMemo, useState } from "react";
 
-type Source = { doc_id: string; chunk_id: string; score: number };
-type Msg = { role: "user" | "assistant"; text: string; sources?: Source[] };
-type EvalItem = {
-  run_id: string;
-  dataset: string;
-  model: string;
-  status: string;
-  sample_size: number;
-  created_at: string;
-};
-type CompareResult = { profile: string; answer: string; sources: Source[] };
-type UploadItem = { document_id: string; status: string; chunks?: number | null };
+import { AuthPanel, ChatPanel, ComparePanel, DocumentsPanel, EvalsPanel, HeroPanel } from "./components/panels";
+import { CompareResult, EvalItem, Msg, Source, UploadItem } from "./components/types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
 
@@ -254,122 +244,50 @@ export default function HomePage() {
 
   return (
     <main className="layout">
-      <header className="hero">
-        <div>
-          <h1>AgroAgent Fullstack Console</h1>
-          <p>Chat, document ingestion, RAG query/compare, and eval tracking in one interface.</p>
-        </div>
-        <div className="meta">
-          <div><span>API</span><code>{API_BASE}</code></div>
-          <div><span>Role</span><code>{role ?? "not authenticated"}</code></div>
-          <div><span>Session</span><code>{sessionId ?? "none"}</code></div>
-        </div>
-      </header>
+      <HeroPanel apiBase={API_BASE} role={role} sessionId={sessionId} />
 
       <section className="grid two">
-        <article className="panel">
-          <h2>Auth</h2>
-          <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="email" />
-          <input value={password} onChange={(e) => setPassword(e.target.value)} placeholder="password" type="password" />
-          <div className="row">
-            <button type="button" onClick={() => onRegister().catch((e) => setError(String(e)))}>Register</button>
-            <button type="button" onClick={() => onLogin().catch((e) => setError(String(e)))}>Login</button>
-          </div>
-        </article>
-
-        <article className="panel">
-          <h2>Documents</h2>
-          <form onSubmit={onUploadDoc} className="stack">
-            <input type="file" accept=".pdf,.txt,.md" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
-            <button type="submit" disabled={!file || !token}>Upload</button>
-          </form>
-          <div className="table">
-            {uploads.length === 0 && <p className="muted">No uploaded documents yet.</p>}
-            {uploads.map((u) => (
-              <div key={u.document_id} className="row spread">
-                <code>{u.document_id.slice(0, 12)}...</code>
-                <span>{u.status}</span>
-                <span>{u.chunks ?? "-"} chunks</span>
-                <button type="button" onClick={() => refreshDocument(u.document_id)}>Refresh</button>
-              </div>
-            ))}
-          </div>
-        </article>
+        <AuthPanel
+          email={email}
+          password={password}
+          onEmailChange={setEmail}
+          onPasswordChange={setPassword}
+          onRegister={() => onRegister().catch((e) => setError(String(e)))}
+          onLogin={() => onLogin().catch((e) => setError(String(e)))}
+        />
+        <DocumentsPanel
+          uploads={uploads}
+          canUpload={!!file && !!token}
+          onUploadSubmit={onUploadDoc}
+          onSelectFile={setFile}
+          onRefresh={refreshDocument}
+        />
       </section>
 
       <section className="grid two">
-        <article className="panel">
-          <h2>Agent Chat</h2>
-          <form onSubmit={onSendChat} className="stack">
-            <textarea
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              rows={4}
-              placeholder="What to sow in Uralsk in May?"
-            />
-            <div className="row">
-              <button type="submit" disabled={!canSend}>{sending ? "Sending..." : "Send Chat"}</button>
-              <select value={queryProfile} onChange={(e) => setQueryProfile(e.target.value)}>
-                <option value="balanced">balanced</option>
-                <option value="semantic_heavy">semantic_heavy</option>
-                <option value="lexical_heavy">lexical_heavy</option>
-              </select>
-              <button type="button" onClick={onRagQuery} disabled={!canSend}>RAG Query</button>
-              <button type="button" onClick={onCompareRag} disabled={!canSend}>Compare</button>
-            </div>
-          </form>
-
-          <div className="chat">
-            {messages.length === 0 && <p className="muted">No messages yet.</p>}
-            {messages.map((m, i) => (
-              <div key={`${m.role}-${i}`} className={`bubble ${m.role}`}>
-                <strong>{m.role === "user" ? "You" : "Agent"}</strong>
-                <p>{m.text}</p>
-                {!!m.sources?.length && (
-                  <div className="sources">
-                    {m.sources.map((s) => (
-                      <small key={`${s.doc_id}-${s.chunk_id}`}>{s.doc_id.slice(0, 8)}:{s.chunk_id.slice(0, 8)} ({s.score.toFixed(3)})</small>
-                    ))}
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        </article>
-
-        <article className="panel">
-          <h2>RAG Compare</h2>
-          {lastCompareRunId && <p><strong>Saved Eval Run:</strong> <code>{lastCompareRunId}</code></p>}
-          {compareResults.length === 0 && <p className="muted">Run compare to see profile outputs.</p>}
-          {compareResults.map((r) => (
-            <div key={r.profile} className="compareCard">
-              <h3>{r.profile}</h3>
-              <p>{r.answer}</p>
-              <p className="muted">Sources: {r.sources.length}</p>
-            </div>
-          ))}
-        </article>
+        <ChatPanel
+          text={text}
+          messages={messages}
+          queryProfile={queryProfile}
+          canSend={canSend}
+          sending={sending}
+          onTextChange={setText}
+          onProfileChange={setQueryProfile}
+          onSendChat={onSendChat}
+          onRagQuery={onRagQuery}
+          onCompare={onCompareRag}
+        />
+        <ComparePanel runId={lastCompareRunId} results={compareResults} />
       </section>
 
-      <section className="panel">
-        <h2>Eval History</h2>
-        <div className="row">
-          <button type="button" onClick={onLoadEvals} disabled={!token}>Load Last 20</button>
-          <input value={evalRunId} onChange={(e) => setEvalRunId(e.target.value)} placeholder="run_id" />
-          <button type="button" onClick={onFetchEvalById} disabled={!evalRunId.trim() || !token}>Load By Run ID</button>
-        </div>
-        <div className="table">
-          {evals.length === 0 && <p className="muted">No eval runs loaded.</p>}
-          {evals.map((r) => (
-            <div key={r.run_id} className="row spread">
-              <code>{r.run_id.slice(0, 10)}...</code>
-              <span>{r.dataset}</span>
-              <span>{r.model}</span>
-              <span>{r.status}</span>
-            </div>
-          ))}
-        </div>
-      </section>
+      <EvalsPanel
+        evals={evals}
+        evalRunId={evalRunId}
+        canQuery={!!token}
+        onLoadEvals={onLoadEvals}
+        onEvalRunIdChange={setEvalRunId}
+        onFetchById={onFetchEvalById}
+      />
 
       {error && <section className="panel error">Error: {error}</section>}
     </main>

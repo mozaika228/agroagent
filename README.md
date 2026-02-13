@@ -12,12 +12,14 @@ AI-agent platform for agriculture in West Kazakhstan.
 - Fullstack dashboard UI (auth, chat, document upload, RAG query/compare, eval history)
 - Hybrid RAG retrieval: pgvector cosine + Postgres FTS + BM25 re-rank
 - Async jobs for document ingestion and eval runs
+- Redis-backed rate limiting (with in-memory fallback)
 - Weather tool (Open-Meteo), NDVI RGB-proxy tool
 - Eval tracking with `run_id`, list, and detail endpoints
 - CI with web lint/build + API tests + coverage XML artifact
 
 ## Architecture At a Glance
 - `apps/web`: Next.js UI console
+  - componentized panels in `apps/web/app/components`
 - `apps/api`: FastAPI orchestration, auth, tools, RAG, evals
 - `infra/db`: SQL migrations, seed, backup/restore scripts
 - `docs/`: architecture, API contracts, backlog, eval plan
@@ -35,6 +37,7 @@ Detailed docs:
    - `cd apps/api`
    - `copy .env.example .env`
    - set secure `JWT_SECRET` and DB settings in `.env`
+   - optional: set `REDIS_URL` to enable distributed rate limiting
    - `pip install -r requirements.txt`
    - `alembic -c alembic.ini upgrade head`
    - optional seed:

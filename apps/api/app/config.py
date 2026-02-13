@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     jwt_exp_minutes: int = 1440
     max_upload_mb: int = 10
     max_requests_per_minute: int = 90
+    redis_url: str | None = None
 
 
 settings = Settings()
