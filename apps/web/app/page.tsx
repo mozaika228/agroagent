@@ -40,7 +40,13 @@ export default function HomePage() {
   const [evalRunId, setEvalRunId] = useState("");
 
   const canSend = useMemo(() => text.trim().length > 0 && !sending && !!token, [text, sending, token]);
-  const authHeaders = token ? { Authorization: `Bearer ${token}` } : {};
+  const authHeaders: HeadersInit = token ? { Authorization: `Bearer ${token}` } : {};
+
+  function jsonHeaders(): HeadersInit {
+    return token
+      ? { "Content-Type": "application/json", Authorization: `Bearer ${token}` }
+      : { "Content-Type": "application/json" };
+  }
 
   function asErr(err: unknown) {
     return err instanceof Error ? err.message : "unknown error";
@@ -81,7 +87,7 @@ export default function HomePage() {
 
     const response = await fetch(`${API_BASE}/v1/chat/sessions`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", ...authHeaders },
+      headers: jsonHeaders(),
       body: JSON.stringify({ locale: "ru" })
     });
 
@@ -106,7 +112,7 @@ export default function HomePage() {
       const sid = await ensureSession();
       const response = await fetch(`${API_BASE}/v1/chat/messages`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...authHeaders },
+        headers: jsonHeaders(),
         body: JSON.stringify({ session_id: sid, text: prompt, locale: "ru", attachments: [] })
       });
 
@@ -133,7 +139,7 @@ export default function HomePage() {
       form.append("language", "ru");
       const response = await fetch(`${API_BASE}/v1/documents`, {
         method: "POST",
-        headers: { ...authHeaders },
+        headers: authHeaders,
         body: form
       });
       if (!response.ok) throw new Error(`upload failed (${response.status})`);
@@ -149,7 +155,7 @@ export default function HomePage() {
     if (!token) return;
     setError(null);
     try {
-      const response = await fetch(`${API_BASE}/v1/documents/${documentId}`, { headers: { ...authHeaders } });
+      const response = await fetch(`${API_BASE}/v1/documents/${documentId}`, { headers: authHeaders });
       if (!response.ok) throw new Error(`document refresh failed (${response.status})`);
       const data = await response.json();
       setUploads((prev) => prev.map((u) => (u.document_id === documentId ? { document_id: data.document_id, status: data.status, chunks: data.chunks ?? null } : u)));
@@ -166,7 +172,7 @@ export default function HomePage() {
       const question = text.trim();
       const response = await fetch(`${API_BASE}/v1/rag/query`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...authHeaders },
+        headers: jsonHeaders(),
         body: JSON.stringify({ question, top_k: 5, locale: "ru", profile: queryProfile })
       });
       if (!response.ok) throw new Error(`rag query failed (${response.status})`);
@@ -192,7 +198,7 @@ export default function HomePage() {
       const question = text.trim();
       const response = await fetch(`${API_BASE}/v1/rag/compare`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...authHeaders },
+        headers: jsonHeaders(),
         body: JSON.stringify({
           question,
           top_k: 5,
@@ -218,7 +224,7 @@ export default function HomePage() {
     if (!token) return;
     setError(null);
     try {
-      const response = await fetch(`${API_BASE}/v1/evals?limit=20`, { headers: { ...authHeaders } });
+      const response = await fetch(`${API_BASE}/v1/evals?limit=20`, { headers: authHeaders });
       if (!response.ok) throw new Error(`eval list failed (${response.status})`);
       const data = await response.json();
       setEvals((data.items ?? []) as EvalItem[]);
@@ -231,7 +237,7 @@ export default function HomePage() {
     if (!evalRunId.trim() || !token) return;
     setError(null);
     try {
-      const response = await fetch(`${API_BASE}/v1/evals/${evalRunId.trim()}`, { headers: { ...authHeaders } });
+      const response = await fetch(`${API_BASE}/v1/evals/${evalRunId.trim()}`, { headers: authHeaders });
       if (!response.ok) throw new Error(`eval detail failed (${response.status})`);
       const data = await response.json();
       setMessages((prev) => [
