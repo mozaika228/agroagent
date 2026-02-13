@@ -2,7 +2,8 @@
 
 import { FormEvent, useMemo, useState } from "react";
 
-type Msg = { role: "user" | "assistant"; text: string };
+type Source = { doc_id: string; chunk_id: string; score: number };
+type Msg = { role: "user" | "assistant"; text: string; sources?: Source[] };
 type EvalItem = {
   run_id: string;
   dataset: string;
@@ -11,26 +12,39 @@ type EvalItem = {
   sample_size: number;
   created_at: string;
 };
+type CompareResult = { profile: string; answer: string; sources: Source[] };
+type UploadItem = { document_id: string; status: string; chunks?: number | null };
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
 
 export default function HomePage() {
-  const [email, setEmail] = useState("farmer@example.com");
+  const [email, setEmail] = useState("admin@agroagent.local");
   const [password, setPassword] = useState("pass1234");
   const [token, setToken] = useState<string | null>(null);
   const [role, setRole] = useState<string | null>(null);
+
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const [messages, setMessages] = useState<Msg[]>([]);
   const [error, setError] = useState<string | null>(null);
+
   const [file, setFile] = useState<File | null>(null);
-  const [uploadInfo, setUploadInfo] = useState<string>("");
+  const [uploads, setUploads] = useState<UploadItem[]>([]);
+
+  const [queryProfile, setQueryProfile] = useState("balanced");
+  const [compareResults, setCompareResults] = useState<CompareResult[]>([]);
+  const [lastCompareRunId, setLastCompareRunId] = useState<string | null>(null);
+
   const [evals, setEvals] = useState<EvalItem[]>([]);
   const [evalRunId, setEvalRunId] = useState("");
 
-  const canSend = useMemo(() => text.trim().length > 0 && !sending, [text, sending]);
+  const canSend = useMemo(() => text.trim().length > 0 && !sending && !!token, [text, sending, token]);
   const authHeaders = token ? { Authorization: `Bearer ${token}` } : {};
+
+  function asErr(err: unknown) {
+    return err instanceof Error ? err.message : "unknown error";
+  }
 
   async function onRegister() {
     setError(null);
@@ -43,6 +57,8 @@ export default function HomePage() {
     const data = await response.json();
     setToken(data.access_token as string);
     setRole(data.role as string);
+    setMessages([]);
+    setSessionId(null);
   }
 
   async function onLogin() {
@@ -56,6 +72,8 @@ export default function HomePage() {
     const data = await response.json();
     setToken(data.access_token as string);
     setRole(data.role as string);
+    setMessages([]);
+    setSessionId(null);
   }
 
   async function ensureSession(): Promise<string> {
@@ -64,19 +82,17 @@ export default function HomePage() {
     const response = await fetch(`${API_BASE}/v1/chat/sessions`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...authHeaders },
-      body: JSON.stringify({ user_id: crypto.randomUUID(), locale: "ru" }) // user_id ignored in auth mode
+      body: JSON.stringify({ locale: "ru" })
     });
 
-    if (!response.ok) {
-      throw new Error(`session create failed (${response.status})`);
-    }
+    if (!response.ok) throw new Error(`session create failed (${response.status})`);
 
     const data = await response.json();
-    setSessionId(data.session_id);
+    setSessionId(data.session_id as string);
     return data.session_id as string;
   }
 
-  async function onSubmit(event: FormEvent) {
+  async function onSendChat(event: FormEvent) {
     event.preventDefault();
     if (!canSend) return;
 
@@ -94,15 +110,11 @@ export default function HomePage() {
         body: JSON.stringify({ session_id: sid, text: prompt, locale: "ru", attachments: [] })
       });
 
-      if (!response.ok) {
-        throw new Error(`message send failed (${response.status})`);
-      }
-
+      if (!response.ok) throw new Error(`message send failed (${response.status})`);
       const data = await response.json();
-      setMessages((prev) => [...prev, { role: "assistant", text: data.answer as string }]);
+      setMessages((prev) => [...prev, { role: "assistant", text: data.answer as string, sources: (data.sources ?? []) as Source[] }]);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "unknown error";
-      setError(msg);
+      setError(asErr(err));
       setMessages((prev) => [...prev, { role: "assistant", text: "API error. Check backend logs." }]);
     } finally {
       setSending(false);
@@ -111,8 +123,9 @@ export default function HomePage() {
 
   async function onUploadDoc(event: FormEvent) {
     event.preventDefault();
-    if (!file) return;
+    if (!file || !token) return;
     setError(null);
+
     try {
       const form = new FormData();
       form.append("file", file);
@@ -123,101 +136,103 @@ export default function HomePage() {
         headers: { ...authHeaders },
         body: form
       });
-      if (!response.ok) {
-        throw new Error(`upload failed (${response.status})`);
-      }
+      if (!response.ok) throw new Error(`upload failed (${response.status})`);
       const data = await response.json();
-      setUploadInfo(`Uploaded: ${data.document_id}, chunks: ${data.chunks ?? "n/a"}`);
+      setUploads((prev) => [{ document_id: data.document_id, status: data.status, chunks: data.chunks ?? null }, ...prev]);
+      setFile(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "upload error");
+      setError(asErr(err));
+    }
+  }
+
+  async function refreshDocument(documentId: string) {
+    if (!token) return;
+    setError(null);
+    try {
+      const response = await fetch(`${API_BASE}/v1/documents/${documentId}`, { headers: { ...authHeaders } });
+      if (!response.ok) throw new Error(`document refresh failed (${response.status})`);
+      const data = await response.json();
+      setUploads((prev) => prev.map((u) => (u.document_id === documentId ? { document_id: data.document_id, status: data.status, chunks: data.chunks ?? null } : u)));
+    } catch (err) {
+      setError(asErr(err));
     }
   }
 
   async function onRagQuery() {
-    if (!text.trim()) return;
+    if (!text.trim() || !token) return;
     setSending(true);
     setError(null);
     try {
+      const question = text.trim();
       const response = await fetch(`${API_BASE}/v1/rag/query`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...authHeaders },
-        body: JSON.stringify({ question: text.trim(), top_k: 5, locale: "ru" })
+        body: JSON.stringify({ question, top_k: 5, locale: "ru", profile: queryProfile })
       });
-      if (!response.ok) {
-        throw new Error(`rag query failed (${response.status})`);
-      }
+      if (!response.ok) throw new Error(`rag query failed (${response.status})`);
       const data = await response.json();
       setMessages((prev) => [
         ...prev,
-        { role: "user", text: text.trim() },
-        { role: "assistant", text: `${data.answer}\n\nSources: ${data.sources.length}` }
+        { role: "user", text: question },
+        { role: "assistant", text: data.answer as string, sources: (data.sources ?? []) as Source[] }
       ]);
       setText("");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "rag query error");
+      setError(asErr(err));
     } finally {
       setSending(false);
     }
   }
 
   async function onCompareRag() {
-    if (!text.trim()) return;
+    if (!text.trim() || !token) return;
     setSending(true);
     setError(null);
     try {
+      const question = text.trim();
       const response = await fetch(`${API_BASE}/v1/rag/compare`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...authHeaders },
         body: JSON.stringify({
-          question: text.trim(),
+          question,
           top_k: 5,
           locale: "ru",
-          profiles: ["balanced", "semantic_heavy", "lexical_heavy"]
+          profiles: ["balanced", "semantic_heavy", "lexical_heavy"],
+          save_eval: true,
+          dataset: "zko_farmers_v1",
+          model: "retriever_hybrid_v1"
         })
       });
-      if (!response.ok) {
-        throw new Error(`rag compare failed (${response.status})`);
-      }
+      if (!response.ok) throw new Error(`rag compare failed (${response.status})`);
       const data = await response.json();
-      const summary = (data.results as Array<{ profile: string; answer: string }>).map(
-        (r) => `${r.profile}: ${r.answer.slice(0, 220)}...`
-      );
-      const maybeRunId = data.run_id ? `\n\nSaved run_id: ${data.run_id}` : "";
-      setMessages((prev) => [
-        ...prev,
-        { role: "user", text: text.trim() },
-        { role: "assistant", text: `A/B compare:\n${summary.join("\n\n")}${maybeRunId}` }
-      ]);
-      setText("");
+      setCompareResults((data.results ?? []) as CompareResult[]);
+      setLastCompareRunId((data.run_id as string | null) ?? null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "rag compare error");
+      setError(asErr(err));
     } finally {
       setSending(false);
     }
   }
 
   async function onLoadEvals() {
+    if (!token) return;
     setError(null);
     try {
       const response = await fetch(`${API_BASE}/v1/evals?limit=20`, { headers: { ...authHeaders } });
-      if (!response.ok) {
-        throw new Error(`eval list failed (${response.status})`);
-      }
+      if (!response.ok) throw new Error(`eval list failed (${response.status})`);
       const data = await response.json();
       setEvals((data.items ?? []) as EvalItem[]);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "eval list error");
+      setError(asErr(err));
     }
   }
 
   async function onFetchEvalById() {
-    if (!evalRunId.trim()) return;
+    if (!evalRunId.trim() || !token) return;
     setError(null);
     try {
       const response = await fetch(`${API_BASE}/v1/evals/${evalRunId.trim()}`, { headers: { ...authHeaders } });
-      if (!response.ok) {
-        throw new Error(`eval detail failed (${response.status})`);
-      }
+      if (!response.ok) throw new Error(`eval detail failed (${response.status})`);
       const data = await response.json();
       setMessages((prev) => [
         ...prev,
@@ -227,95 +242,130 @@ export default function HomePage() {
         }
       ]);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "eval detail error");
+      setError(asErr(err));
     }
   }
 
   return (
-    <main>
-      <h1>AgroAgent MVP Chat</h1>
-      <div className="card">
-        <p>API: <code>{API_BASE}</code></p>
-        <p>Role: <code>{role ?? "not authenticated"}</code></p>
-        <p>Session: <code>{sessionId ?? "not created"}</code></p>
-      </div>
-
-      <div className="card">
-        <h2>Auth</h2>
-        <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="email" style={{ width: "100%", marginBottom: 8 }} />
-        <input value={password} onChange={(e) => setPassword(e.target.value)} placeholder="password" type="password" style={{ width: "100%", marginBottom: 8 }} />
-        <button type="button" onClick={() => onRegister().catch((e) => setError(String(e)))} style={{ marginRight: 8 }}>Register</button>
-        <button type="button" onClick={() => onLogin().catch((e) => setError(String(e)))}>Login</button>
-      </div>
-
-      <div className="card" style={{ minHeight: 240 }}>
-        {messages.length === 0 && <p>No messages yet.</p>}
-        {messages.map((m, i) => (
-          <p key={`${m.role}-${i}`}><strong>{m.role === "user" ? "You" : "Agent"}:</strong> {m.text}</p>
-        ))}
-      </div>
-
-      <form className="card" onSubmit={onSubmit}>
-        <label htmlFor="prompt">Question</label>
-        <textarea
-          id="prompt"
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          rows={4}
-          placeholder="What to sow in Uralsk in May?"
-          style={{ width: "100%", marginTop: 8 }}
-        />
-        <button type="submit" disabled={!canSend} style={{ marginTop: 10, marginRight: 8 }}>
-          {sending ? "Sending..." : "Send"}
-        </button>
-        <button type="button" disabled={!canSend} onClick={onRagQuery} style={{ marginTop: 10 }}>
-          RAG Query
-        </button>
-        <button type="button" disabled={!canSend} onClick={onCompareRag} style={{ marginTop: 10, marginLeft: 8 }}>
-          Compare Profiles
-        </button>
-        {error && <p style={{ color: "#8a1e1e" }}>Error: {error}</p>}
-      </form>
-
-      <form className="card" onSubmit={onUploadDoc}>
-        <label htmlFor="doc">Upload PDF/TXT for RAG</label>
-        <input
-          id="doc"
-          type="file"
-          accept=".pdf,.txt,.md"
-          onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-          style={{ display: "block", marginTop: 8 }}
-        />
-        <button type="submit" disabled={!file} style={{ marginTop: 10 }}>
-          Upload
-        </button>
-        {uploadInfo && <p>{uploadInfo}</p>}
-      </form>
-
-      <div className="card">
-        <h2>Eval History</h2>
-        <button type="button" onClick={onLoadEvals}>Load Last 20</button>
-        <div style={{ marginTop: 10 }}>
-          <input
-            value={evalRunId}
-            onChange={(e) => setEvalRunId(e.target.value)}
-            placeholder="run_id"
-            style={{ width: "100%", marginBottom: 8 }}
-          />
-          <button type="button" onClick={onFetchEvalById} disabled={!evalRunId.trim()}>
-            Load By Run ID
-          </button>
+    <main className="layout">
+      <header className="hero">
+        <div>
+          <h1>AgroAgent Fullstack Console</h1>
+          <p>Chat, document ingestion, RAG query/compare, and eval tracking in one interface.</p>
         </div>
-        {evals.length > 0 && (
-          <div style={{ marginTop: 12 }}>
-            {evals.map((r) => (
-              <p key={r.run_id}>
-                <code>{r.run_id}</code> | {r.dataset} | {r.model} | {r.status}
-              </p>
+        <div className="meta">
+          <div><span>API</span><code>{API_BASE}</code></div>
+          <div><span>Role</span><code>{role ?? "not authenticated"}</code></div>
+          <div><span>Session</span><code>{sessionId ?? "none"}</code></div>
+        </div>
+      </header>
+
+      <section className="grid two">
+        <article className="panel">
+          <h2>Auth</h2>
+          <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="email" />
+          <input value={password} onChange={(e) => setPassword(e.target.value)} placeholder="password" type="password" />
+          <div className="row">
+            <button type="button" onClick={() => onRegister().catch((e) => setError(String(e)))}>Register</button>
+            <button type="button" onClick={() => onLogin().catch((e) => setError(String(e)))}>Login</button>
+          </div>
+        </article>
+
+        <article className="panel">
+          <h2>Documents</h2>
+          <form onSubmit={onUploadDoc} className="stack">
+            <input type="file" accept=".pdf,.txt,.md" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
+            <button type="submit" disabled={!file || !token}>Upload</button>
+          </form>
+          <div className="table">
+            {uploads.length === 0 && <p className="muted">No uploaded documents yet.</p>}
+            {uploads.map((u) => (
+              <div key={u.document_id} className="row spread">
+                <code>{u.document_id.slice(0, 12)}...</code>
+                <span>{u.status}</span>
+                <span>{u.chunks ?? "-"} chunks</span>
+                <button type="button" onClick={() => refreshDocument(u.document_id)}>Refresh</button>
+              </div>
             ))}
           </div>
-        )}
-      </div>
+        </article>
+      </section>
+
+      <section className="grid two">
+        <article className="panel">
+          <h2>Agent Chat</h2>
+          <form onSubmit={onSendChat} className="stack">
+            <textarea
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              rows={4}
+              placeholder="What to sow in Uralsk in May?"
+            />
+            <div className="row">
+              <button type="submit" disabled={!canSend}>{sending ? "Sending..." : "Send Chat"}</button>
+              <select value={queryProfile} onChange={(e) => setQueryProfile(e.target.value)}>
+                <option value="balanced">balanced</option>
+                <option value="semantic_heavy">semantic_heavy</option>
+                <option value="lexical_heavy">lexical_heavy</option>
+              </select>
+              <button type="button" onClick={onRagQuery} disabled={!canSend}>RAG Query</button>
+              <button type="button" onClick={onCompareRag} disabled={!canSend}>Compare</button>
+            </div>
+          </form>
+
+          <div className="chat">
+            {messages.length === 0 && <p className="muted">No messages yet.</p>}
+            {messages.map((m, i) => (
+              <div key={`${m.role}-${i}`} className={`bubble ${m.role}`}>
+                <strong>{m.role === "user" ? "You" : "Agent"}</strong>
+                <p>{m.text}</p>
+                {!!m.sources?.length && (
+                  <div className="sources">
+                    {m.sources.map((s) => (
+                      <small key={`${s.doc_id}-${s.chunk_id}`}>{s.doc_id.slice(0, 8)}:{s.chunk_id.slice(0, 8)} ({s.score.toFixed(3)})</small>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </article>
+
+        <article className="panel">
+          <h2>RAG Compare</h2>
+          {lastCompareRunId && <p><strong>Saved Eval Run:</strong> <code>{lastCompareRunId}</code></p>}
+          {compareResults.length === 0 && <p className="muted">Run compare to see profile outputs.</p>}
+          {compareResults.map((r) => (
+            <div key={r.profile} className="compareCard">
+              <h3>{r.profile}</h3>
+              <p>{r.answer}</p>
+              <p className="muted">Sources: {r.sources.length}</p>
+            </div>
+          ))}
+        </article>
+      </section>
+
+      <section className="panel">
+        <h2>Eval History</h2>
+        <div className="row">
+          <button type="button" onClick={onLoadEvals} disabled={!token}>Load Last 20</button>
+          <input value={evalRunId} onChange={(e) => setEvalRunId(e.target.value)} placeholder="run_id" />
+          <button type="button" onClick={onFetchEvalById} disabled={!evalRunId.trim() || !token}>Load By Run ID</button>
+        </div>
+        <div className="table">
+          {evals.length === 0 && <p className="muted">No eval runs loaded.</p>}
+          {evals.map((r) => (
+            <div key={r.run_id} className="row spread">
+              <code>{r.run_id.slice(0, 10)}...</code>
+              <span>{r.dataset}</span>
+              <span>{r.model}</span>
+              <span>{r.status}</span>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {error && <section className="panel error">Error: {error}</section>}
     </main>
   );
 }
