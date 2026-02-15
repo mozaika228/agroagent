@@ -138,6 +138,39 @@ def _compute_trace_digest(step_hashes: list[str]) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+def _order_steps_by_chain(rows: list[AgentStep]) -> list[AgentStep]:
+    if not rows:
+        return []
+
+    by_parent: dict[str | None, list[AgentStep]] = {}
+    for row in rows:
+        by_parent.setdefault(row.parent_hash, []).append(row)
+
+    for key in by_parent:
+        by_parent[key].sort(key=lambda item: (item.created_at, item.id))
+
+    ordered: list[AgentStep] = []
+    current_parent: str | None = None
+    visited: set[str] = set()
+
+    while True:
+        candidates = by_parent.get(current_parent, [])
+        next_row = next((item for item in candidates if item.id not in visited), None)
+        if next_row is None:
+            break
+        ordered.append(next_row)
+        visited.add(next_row.id)
+        current_parent = next_row.step_hash
+
+    if len(ordered) == len(rows):
+        return ordered
+
+    # Fallback for malformed chains: stable order for deterministic output.
+    remaining = [row for row in rows if row.id not in visited]
+    remaining.sort(key=lambda item: (item.created_at, item.id))
+    return [*ordered, *remaining]
+
+
 def _update_debate_metrics(*, winner: str, latency_ms: float, trace_id: str, rounds: int, step_count: int) -> None:
     with _debate_metrics_lock:
         _debate_metrics["total_runs"] += 1
@@ -657,15 +690,11 @@ def get_agent_trace(
 ) -> AgentTraceOut:
     check_rate_limit(request)
     _ = user
-    rows = (
-        db.query(AgentStep)
-        .filter(AgentStep.trace_id == trace_id)
-        .order_by(AgentStep.created_at.asc(), AgentStep.id.asc())
-        .all()
-    )
+    rows = db.query(AgentStep).filter(AgentStep.trace_id == trace_id).all()
     if not rows:
         raise HTTPException(status_code=404, detail="trace not found")
-    step_hashes = [row.step_hash for row in rows]
+    ordered_rows = _order_steps_by_chain(rows)
+    step_hashes = [row.step_hash for row in ordered_rows]
     return AgentTraceOut(
         trace_id=trace_id,
         trace_digest=_compute_trace_digest(step_hashes),
@@ -678,7 +707,7 @@ def get_agent_trace(
                 parent_hash=row.parent_hash,
                 payload=row.payload,
             )
-            for row in rows
+            for row in ordered_rows
         ],
     )
 
