@@ -2,11 +2,12 @@
 from pathlib import Path
 from uuid import uuid4
 import logging
+from threading import Lock
 
 import httpx
 import numpy as np
 from PIL import Image
-from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -54,7 +55,8 @@ from .schemas import (
 
 logger = logging.getLogger("agroagent.api")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-
+_idem_lock = Lock()
+_idem_store: dict[str, dict] = {}
 app = FastAPI(title="AgroAgent API", version="0.3.0")
 
 app.add_middleware(
@@ -90,6 +92,20 @@ def _pick_daily_value(data: dict, key: str) -> float:
     if not values:
         return 0.0
     return float(values[0] or 0.0)
+
+
+def _idem_get(namespace: str, key: str | None) -> dict | None:
+    if not key:
+        return None
+    with _idem_lock:
+        return _idem_store.get(f"{namespace}:{key}")
+
+
+def _idem_set(namespace: str, key: str | None, value: dict) -> None:
+    if not key:
+        return
+    with _idem_lock:
+        _idem_store[f"{namespace}:{key}"] = value
 
 
 def _profile_params(profile: str) -> dict[str, float | int]:
@@ -361,6 +377,7 @@ def send_message(
 async def upload_document(
     background_tasks: BackgroundTasks,
     request: Request,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     file: UploadFile = File(...),
     title: str = Form(...),
     language: str = Form("ru"),
@@ -368,6 +385,9 @@ async def upload_document(
     user: User = Depends(require_roles("farmer", "analyst", "admin")),
 ) -> DocumentOut:
     check_rate_limit(request)
+    cached = _idem_get("documents", idempotency_key)
+    if cached:
+        return DocumentOut(**cached)
     allowed_ext = {".pdf", ".txt", ".md"}
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in allowed_ext:
@@ -400,7 +420,9 @@ async def upload_document(
     db.refresh(job)
 
     background_tasks.add_task(_ingest_document_job, job.id, doc_id, str(file_path), file.filename or "document.txt", language)
-    return DocumentOut(document_id=doc_id, status="processing", chunks=None)
+    out = DocumentOut(document_id=doc_id, status="processing", chunks=None)
+    _idem_set("documents", idempotency_key, out.model_dump())
+    return out
 
 
 @app.get("/v1/documents/{document_id}", response_model=DocumentOut)
@@ -597,10 +619,14 @@ def run_eval(
     payload: EvalRunCreate,
     background_tasks: BackgroundTasks,
     request: Request,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     db: Session = Depends(get_db),
     user: User = Depends(require_roles("analyst", "admin")),
 ) -> EvalRunOut:
     check_rate_limit(request)
+    cached = _idem_get("evals", idempotency_key)
+    if cached:
+        return EvalRunOut(**cached)
     _ = user
     run = EvalRun(dataset=payload.dataset, model=payload.model, sample_size=payload.sample_size, status="queued")
     db.add(run)
@@ -615,7 +641,9 @@ def run_eval(
     db.refresh(run)
     db.refresh(job)
     background_tasks.add_task(_run_eval_job, job.id, run.id)
-    return EvalRunOut(run_id=run.id, status=run.status)
+    out = EvalRunOut(run_id=run.id, status=run.status)
+    _idem_set("evals", idempotency_key, out.model_dump())
+    return out
 
 
 @app.get("/v1/evals/{run_id}", response_model=EvalRunDetail)
@@ -718,3 +746,7 @@ def list_jobs(
             for row in rows
         ]
     }
+
+
+
+

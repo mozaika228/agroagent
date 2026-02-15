@@ -1,9 +1,9 @@
 ﻿"use client";
 
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 
-import { AuthPanel, ChatPanel, ComparePanel, DocumentsPanel, EvalsPanel, HeroPanel } from "./components/panels";
-import { CompareResult, EvalItem, Msg, Source, UploadItem } from "./components/types";
+import { AuthPanel, ChatPanel, ComparePanel, DocumentsPanel, EvalsPanel, HeroPanel, JobsPanel } from "./components/panels";
+import { CompareResult, EvalItem, JobItem, Msg, Source, UploadItem } from "./components/types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
 
@@ -28,6 +28,8 @@ export default function HomePage() {
 
   const [evals, setEvals] = useState<EvalItem[]>([]);
   const [evalRunId, setEvalRunId] = useState("");
+  const [jobs, setJobs] = useState<JobItem[]>([]);
+  const [pollJobs, setPollJobs] = useState(false);
 
   const canSend = useMemo(() => text.trim().length > 0 && !sending && !!token, [text, sending, token]);
   const authHeaders: HeadersInit = token ? { Authorization: `Bearer ${token}` } : {};
@@ -41,6 +43,29 @@ export default function HomePage() {
   function asErr(err: unknown) {
     return err instanceof Error ? err.message : "unknown error";
   }
+
+  useEffect(() => {
+    const savedToken = localStorage.getItem("agroagent.token");
+    const savedRole = localStorage.getItem("agroagent.role");
+    const savedEmail = localStorage.getItem("agroagent.email");
+    if (savedToken) setToken(savedToken);
+    if (savedRole) setRole(savedRole);
+    if (savedEmail) setEmail(savedEmail);
+  }, []);
+
+  useEffect(() => {
+    if (token) localStorage.setItem("agroagent.token", token);
+    else localStorage.removeItem("agroagent.token");
+  }, [token]);
+
+  useEffect(() => {
+    if (role) localStorage.setItem("agroagent.role", role);
+    else localStorage.removeItem("agroagent.role");
+  }, [role]);
+
+  useEffect(() => {
+    localStorage.setItem("agroagent.email", email);
+  }, [email]);
 
   async function onRegister() {
     setError(null);
@@ -70,6 +95,18 @@ export default function HomePage() {
     setRole(data.role as string);
     setMessages([]);
     setSessionId(null);
+  }
+
+  function onLogout() {
+    setToken(null);
+    setRole(null);
+    setSessionId(null);
+    setMessages([]);
+    setUploads([]);
+    setCompareResults([]);
+    setLastCompareRunId(null);
+    setEvals([]);
+    setJobs([]);
   }
 
   async function ensureSession(): Promise<string> {
@@ -223,6 +260,27 @@ export default function HomePage() {
     }
   }
 
+  async function onLoadJobs() {
+    if (!token) return;
+    setError(null);
+    try {
+      const response = await fetch(`${API_BASE}/v1/jobs?limit=20`, { headers: authHeaders });
+      if (!response.ok) throw new Error(`jobs list failed (${response.status})`);
+      const data = await response.json();
+      setJobs((data.items ?? []) as JobItem[]);
+    } catch (err) {
+      setError(asErr(err));
+    }
+  }
+
+  useEffect(() => {
+    if (!pollJobs || !token) return;
+    const id = setInterval(() => {
+      onLoadJobs().catch(() => undefined);
+    }, 5000);
+    return () => clearInterval(id);
+  }, [pollJobs, token]);
+
   async function onFetchEvalById() {
     if (!evalRunId.trim() || !token) return;
     setError(null);
@@ -254,6 +312,8 @@ export default function HomePage() {
           onPasswordChange={setPassword}
           onRegister={() => onRegister().catch((e) => setError(String(e)))}
           onLogin={() => onLogin().catch((e) => setError(String(e)))}
+          onLogout={onLogout}
+          isAuthed={!!token}
         />
         <DocumentsPanel
           uploads={uploads}
@@ -287,6 +347,14 @@ export default function HomePage() {
         onLoadEvals={onLoadEvals}
         onEvalRunIdChange={setEvalRunId}
         onFetchById={onFetchEvalById}
+      />
+
+      <JobsPanel
+        jobs={jobs}
+        polling={pollJobs}
+        canQuery={!!token}
+        onLoadJobs={() => onLoadJobs().catch((e) => setError(String(e)))}
+        onTogglePolling={() => setPollJobs((v) => !v)}
       />
 
       {error && <section className="panel error">Error: {error}</section>}

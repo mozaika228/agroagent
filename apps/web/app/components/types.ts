@@ -12,3 +12,11 @@ export type EvalItem = {
 
 export type CompareResult = { profile: string; answer: string; sources: Source[] };
 export type UploadItem = { document_id: string; status: string; chunks?: number | null };
+export type JobItem = {
+  job_id: string;
+  job_type: string;
+  status: string;
+  payload: Record<string, unknown>;
+  result: Record<string, unknown>;
+  error?: string | null;
+};

@@ -1,5 +1,5 @@
 import { FormEvent } from "react";
-import { CompareResult, EvalItem, Msg, UploadItem } from "./types";
+import { CompareResult, EvalItem, JobItem, Msg, UploadItem } from "./types";
 
 export function HeroPanel(props: { apiBase: string; role: string | null; sessionId: string | null }) {
   return (
@@ -24,6 +24,8 @@ export function AuthPanel(props: {
   onPasswordChange: (v: string) => void;
   onRegister: () => void;
   onLogin: () => void;
+  onLogout: () => void;
+  isAuthed: boolean;
 }) {
   return (
     <article className="panel">
@@ -33,6 +35,7 @@ export function AuthPanel(props: {
       <div className="row">
         <button type="button" onClick={props.onRegister}>Register</button>
         <button type="button" onClick={props.onLogin}>Login</button>
+        <button type="button" onClick={props.onLogout} disabled={!props.isAuthed}>Logout</button>
       </div>
     </article>
   );
@@ -162,6 +165,36 @@ export function EvalsPanel(props: {
             <span>{r.dataset}</span>
             <span>{r.model}</span>
             <span>{r.status}</span>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+export function JobsPanel(props: {
+  jobs: JobItem[];
+  polling: boolean;
+  canQuery: boolean;
+  onTogglePolling: () => void;
+  onLoadJobs: () => void;
+}) {
+  return (
+    <section className="panel">
+      <h2>Jobs</h2>
+      <div className="row">
+        <button type="button" onClick={props.onLoadJobs} disabled={!props.canQuery}>Load Jobs</button>
+        <button type="button" onClick={props.onTogglePolling} disabled={!props.canQuery}>
+          {props.polling ? "Stop Polling" : "Start Polling"}
+        </button>
+      </div>
+      <div className="table">
+        {props.jobs.length === 0 && <p className="muted">No jobs loaded.</p>}
+        {props.jobs.map((j) => (
+          <div key={j.job_id} className="row spread">
+            <code>{j.job_id.slice(0, 10)}...</code>
+            <span>{j.job_type}</span>
+            <span>{j.status}</span>
           </div>
         ))}
       </div>
