@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+POLICY_VERSION = "agro-safety-v1.1"
+
 
 @dataclass
 class SafetyDecision:
+    policy_version: str
     level: str
     action: str
     reasons: list[str]
@@ -46,6 +49,7 @@ def evaluate_agro_policy(question: str, recommendation: str, locale: str = "ru")
             "and follow approved local products and labels."
         )
         return SafetyDecision(
+            policy_version=POLICY_VERSION,
             level="high",
             action="block",
             reasons=reasons,
@@ -60,6 +64,7 @@ def evaluate_agro_policy(question: str, recommendation: str, locale: str = "ru")
 
     if rules:
         return SafetyDecision(
+            policy_version=POLICY_VERSION,
             level="medium",
             action="warn",
             reasons=reasons,
@@ -68,6 +73,7 @@ def evaluate_agro_policy(question: str, recommendation: str, locale: str = "ru")
         )
 
     return SafetyDecision(
+        policy_version=POLICY_VERSION,
         level="low",
         action="allow",
         reasons=["No blocked safety signals detected."],

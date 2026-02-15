@@ -205,6 +205,8 @@ export function JobsPanel(props: {
 export function DebatePanel(props: {
   question: string;
   rounds: number;
+  safetyOverride: boolean;
+  overrideReason: string;
   traceIdInput: string;
   run: DebateRun | null;
   traceSteps: DebateStep[];
@@ -214,6 +216,8 @@ export function DebatePanel(props: {
   canQuery: boolean;
   onQuestionChange: (v: string) => void;
   onRoundsChange: (v: number) => void;
+  onSafetyOverrideChange: (v: boolean) => void;
+  onOverrideReasonChange: (v: string) => void;
   onTraceIdChange: (v: string) => void;
   onRunDebate: () => void;
   onLoadTrace: () => void;
@@ -240,6 +244,21 @@ export function DebatePanel(props: {
               onChange={(e) => props.onRoundsChange(Number(e.target.value || 1))}
             />
           </label>
+          <label>
+            Safety Override
+            <input
+              type="checkbox"
+              checked={props.safetyOverride}
+              onChange={(e) => props.onSafetyOverrideChange(e.target.checked)}
+            />
+          </label>
+          {props.safetyOverride && (
+            <input
+              value={props.overrideReason}
+              onChange={(e) => props.onOverrideReasonChange(e.target.value)}
+              placeholder="override reason (min 8 chars)"
+            />
+          )}
           <button type="button" onClick={props.onRunDebate} disabled={!props.canRun}>
             {props.loading ? "Running..." : "Run Debate"}
           </button>
@@ -255,7 +274,9 @@ export function DebatePanel(props: {
           <p><strong>Digest:</strong> <code>{props.run.trace_digest}</code></p>
           <p><strong>Rounds:</strong> {props.run.rounds}</p>
           <p><strong>Spawned:</strong> {props.run.spawned_agents.join(", ")}</p>
-          <p><strong>Safety:</strong> {props.run.safety.action} ({props.run.safety.level})</p>
+          <p><strong>Policy:</strong> {props.run.safety.policy_version}</p>
+          <p><strong>Safety:</strong> {props.run.safety.effective_action} ({props.run.safety.level})</p>
+          {props.run.safety.overridden && <p><strong>Override:</strong> {props.run.safety.override_reason}</p>}
           {props.run.safety.reasons.length > 0 && <p className="muted">{props.run.safety.reasons.join(" | ")}</p>}
           <p><strong>Winner:</strong> {props.run.winner} | A: {props.run.score_a.toFixed(3)} | B: {props.run.score_b.toFixed(3)}</p>
           <p>{props.run.answer}</p>

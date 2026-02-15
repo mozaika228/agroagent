@@ -12,6 +12,7 @@ import numpy as np
 from PIL import Image
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import PlainTextResponse
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -20,6 +21,7 @@ from .agents.pipeline import AgentStepDraft, run_hierarchical_debate
 from .config import settings
 from .db import SessionLocal, get_db
 from .models import AgentStep, ChatMessage, ChatSession, Document, DocumentChunk, EvalRun, Job, ToolCall, User
+from .models import SafetyAuditLog
 from .rag import (
     VECTOR_DIM,
     bm25_scores,
@@ -37,6 +39,8 @@ from .schemas import (
     AgentSafetyOut,
     AgentStepOut,
     AgentTraceOut,
+    SafetyAuditItemOut,
+    SafetyAuditListOut,
     AuthLoginCreate,
     AuthRegisterCreate,
     AuthTokenOut,
@@ -72,6 +76,7 @@ _debate_metrics_lock = Lock()
 _debate_metrics = {
     "total_runs": 0,
     "blocked_runs": 0,
+    "overridden_runs": 0,
     "winner_a": 0,
     "winner_b": 0,
     "total_latency_ms": 0.0,
@@ -175,12 +180,21 @@ def _order_steps_by_chain(rows: list[AgentStep]) -> list[AgentStep]:
 
 
 def _update_debate_metrics(
-    *, winner: str, latency_ms: float, trace_id: str, rounds: int, step_count: int, blocked: bool
+    *,
+    winner: str,
+    latency_ms: float,
+    trace_id: str,
+    rounds: int,
+    step_count: int,
+    blocked: bool,
+    overridden: bool,
 ) -> None:
     with _debate_metrics_lock:
         _debate_metrics["total_runs"] += 1
         if blocked:
             _debate_metrics["blocked_runs"] += 1
+        if overridden:
+            _debate_metrics["overridden_runs"] += 1
         _debate_metrics["total_latency_ms"] += latency_ms
         _debate_metrics["total_rounds"] += rounds
         _debate_metrics["total_steps"] += step_count
@@ -189,6 +203,48 @@ def _update_debate_metrics(
         elif winner == "B":
             _debate_metrics["winner_b"] += 1
         _debate_metrics["last_trace_id"] = trace_id
+
+
+def _render_prometheus_metrics() -> str:
+    with _debate_metrics_lock:
+        total_runs = int(_debate_metrics["total_runs"])
+        blocked_runs = int(_debate_metrics["blocked_runs"])
+        overridden_runs = int(_debate_metrics["overridden_runs"])
+        winner_a = int(_debate_metrics["winner_a"])
+        winner_b = int(_debate_metrics["winner_b"])
+        avg_latency = (float(_debate_metrics["total_latency_ms"]) / total_runs) if total_runs else 0.0
+        avg_rounds = (float(_debate_metrics["total_rounds"]) / total_runs) if total_runs else 0.0
+        avg_steps = (float(_debate_metrics["total_steps"]) / total_runs) if total_runs else 0.0
+
+    return "\n".join(
+        [
+            "# HELP agroagent_debate_total_runs Total debate runs.",
+            "# TYPE agroagent_debate_total_runs counter",
+            f"agroagent_debate_total_runs {total_runs}",
+            "# HELP agroagent_debate_blocked_runs Debate runs blocked by safety policy.",
+            "# TYPE agroagent_debate_blocked_runs counter",
+            f"agroagent_debate_blocked_runs {blocked_runs}",
+            "# HELP agroagent_debate_overridden_runs Debate runs with admin override.",
+            "# TYPE agroagent_debate_overridden_runs counter",
+            f"agroagent_debate_overridden_runs {overridden_runs}",
+            "# HELP agroagent_debate_winner_a Winner A count.",
+            "# TYPE agroagent_debate_winner_a counter",
+            f"agroagent_debate_winner_a {winner_a}",
+            "# HELP agroagent_debate_winner_b Winner B count.",
+            "# TYPE agroagent_debate_winner_b counter",
+            f"agroagent_debate_winner_b {winner_b}",
+            "# HELP agroagent_debate_avg_latency_ms Average debate latency in ms.",
+            "# TYPE agroagent_debate_avg_latency_ms gauge",
+            f"agroagent_debate_avg_latency_ms {avg_latency:.2f}",
+            "# HELP agroagent_debate_avg_rounds Average rounds per debate.",
+            "# TYPE agroagent_debate_avg_rounds gauge",
+            f"agroagent_debate_avg_rounds {avg_rounds:.2f}",
+            "# HELP agroagent_debate_avg_steps Average steps per debate.",
+            "# TYPE agroagent_debate_avg_steps gauge",
+            f"agroagent_debate_avg_steps {avg_steps:.2f}",
+            "",
+        ]
+    )
 
 
 def _profile_params(profile: str) -> dict[str, float | int]:
@@ -622,16 +678,24 @@ def run_agent_debate(
     check_rate_limit(request)
     _ = user
     started = time.perf_counter()
+    if payload.safety_override and (not payload.override_reason or len(payload.override_reason.strip()) < 8):
+        raise HTTPException(status_code=400, detail="override_reason must be provided and be at least 8 characters")
 
     trace_id = str(uuid4())
     drafts, final = run_hierarchical_debate(payload.question, payload.locale, payload.rounds)
     safety = evaluate_agro_policy(payload.question, final["answer"], payload.locale)
-    final_answer = safety.safe_alternative if safety.action == "block" else final["answer"]
+    overridden = payload.safety_override and safety.action == "block"
+    effective_action = "warn" if overridden else safety.action
+    final_answer = final["answer"] if overridden else (safety.safe_alternative if safety.action == "block" else final["answer"])
     policy_draft = AgentStepDraft(
         agent_name="safety-policy-agent",
         step_type="safety_policy",
         payload={
-            "action": safety.action,
+            "policy_version": safety.policy_version,
+            "original_action": safety.action,
+            "effective_action": effective_action,
+            "overridden": overridden,
+            "override_reason": payload.override_reason,
             "level": safety.level,
             "reasons": safety.reasons,
             "rules_triggered": safety.rules_triggered,
@@ -680,6 +744,21 @@ def run_agent_debate(
         parent_hash = step_hash
         parent_step_id = step.id
 
+    db.add(
+        SafetyAuditLog(
+            trace_id=trace_id,
+            policy_version=safety.policy_version,
+            original_action=safety.action,
+            effective_action=effective_action,
+            overridden=overridden,
+            override_reason=payload.override_reason.strip() if payload.override_reason else None,
+            safety_level=safety.level,
+            rules_triggered={"items": safety.rules_triggered},
+            reasons={"items": safety.reasons},
+            question=payload.question,
+            recommendation=final_answer,
+        )
+    )
     db.commit()
     elapsed_ms = (time.perf_counter() - started) * 1000.0
     trace_digest = _compute_trace_digest(step_hashes)
@@ -689,7 +768,8 @@ def run_agent_debate(
         trace_id=trace_id,
         rounds=int(final["rounds"]),
         step_count=len(step_hashes),
-        blocked=safety.action == "block",
+        blocked=effective_action == "block",
+        overridden=overridden,
     )
     return AgentDebateOut(
         trace_id=trace_id,
@@ -701,8 +781,12 @@ def run_agent_debate(
         rounds=int(final["rounds"]),
         spawned_agents=[str(item) for item in final["spawned_agents"]],
         safety=AgentSafetyOut(
+            policy_version=safety.policy_version,
             level=safety.level,
-            action=safety.action,
+            original_action=safety.action,
+            effective_action=effective_action,
+            overridden=overridden,
+            override_reason=payload.override_reason.strip() if payload.override_reason else None,
             reasons=safety.reasons,
             rules_triggered=safety.rules_triggered,
         ),
@@ -756,6 +840,7 @@ def get_agent_metrics(
         return AgentMetricsOut(
             total_runs=total_runs,
             blocked_runs=int(_debate_metrics["blocked_runs"]),
+            overridden_runs=int(_debate_metrics["overridden_runs"]),
             winner_a=int(_debate_metrics["winner_a"]),
             winner_b=int(_debate_metrics["winner_b"]),
             avg_latency_ms=round(avg_latency, 2),
@@ -763,6 +848,47 @@ def get_agent_metrics(
             avg_steps=round(avg_steps, 2),
             last_trace_id=_debate_metrics["last_trace_id"],
         )
+
+
+@app.get("/v1/agents/safety/audit", response_model=SafetyAuditListOut)
+def list_safety_audit(
+    request: Request,
+    limit: int = 20,
+    trace_id: str | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("analyst", "admin")),
+) -> SafetyAuditListOut:
+    check_rate_limit(request)
+    _ = user
+    q = db.query(SafetyAuditLog)
+    if trace_id:
+        q = q.filter(SafetyAuditLog.trace_id == trace_id)
+    rows = q.order_by(SafetyAuditLog.created_at.desc()).limit(max(1, min(limit, 100))).all()
+    return SafetyAuditListOut(
+        items=[
+            SafetyAuditItemOut(
+                audit_id=row.id,
+                trace_id=row.trace_id,
+                policy_version=row.policy_version,
+                original_action=row.original_action,
+                effective_action=row.effective_action,
+                overridden=row.overridden,
+                override_reason=row.override_reason,
+                safety_level=row.safety_level,
+                rules_triggered=[str(item) for item in (row.rules_triggered or {}).get("items", [])],
+                reasons=[str(item) for item in (row.reasons or {}).get("items", [])],
+                question=row.question,
+                recommendation=row.recommendation,
+                created_at=row.created_at,
+            )
+            for row in rows
+        ]
+    )
+
+
+@app.get("/metrics", response_class=PlainTextResponse)
+def metrics() -> PlainTextResponse:
+    return PlainTextResponse(_render_prometheus_metrics(), media_type="text/plain; version=0.0.4")
 
 
 @app.post("/v1/tools/weather", response_model=WeatherOut)

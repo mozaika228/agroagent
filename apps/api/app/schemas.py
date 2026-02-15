@@ -175,11 +175,17 @@ class AgentDebateRequest(BaseModel):
     locale: str = "ru"
     include_steps: bool = True
     rounds: int = 2
+    safety_override: bool = False
+    override_reason: str | None = None
 
 
 class AgentSafetyOut(BaseModel):
+    policy_version: str
     level: str
-    action: str
+    original_action: str
+    effective_action: str
+    overridden: bool
+    override_reason: str | None = None
     reasons: list[str] = Field(default_factory=list)
     rules_triggered: list[str] = Field(default_factory=list)
 
@@ -215,10 +221,31 @@ class AgentTraceOut(BaseModel):
 class AgentMetricsOut(BaseModel):
     total_runs: int
     blocked_runs: int
+    overridden_runs: int
     winner_a: int
     winner_b: int
     avg_latency_ms: float
     avg_rounds: float
     avg_steps: float
     last_trace_id: str | None = None
+
+
+class SafetyAuditItemOut(BaseModel):
+    audit_id: str
+    trace_id: str
+    policy_version: str
+    original_action: str
+    effective_action: str
+    overridden: bool
+    override_reason: str | None = None
+    safety_level: str
+    rules_triggered: list[str] = Field(default_factory=list)
+    reasons: list[str] = Field(default_factory=list)
+    question: str
+    recommendation: str
+    created_at: datetime
+
+
+class SafetyAuditListOut(BaseModel):
+    items: list[SafetyAuditItemOut] = Field(default_factory=list)
 

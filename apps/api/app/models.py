@@ -129,3 +129,21 @@ class AgentStep(Base):
     step_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     payload: Mapped[dict] = mapped_column(JSONType, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class SafetyAuditLog(Base):
+    __tablename__ = "safety_audit_logs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=gen_id)
+    trace_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    policy_version: Mapped[str] = mapped_column(String(50), nullable=False)
+    original_action: Mapped[str] = mapped_column(String(16), nullable=False)
+    effective_action: Mapped[str] = mapped_column(String(16), nullable=False)
+    overridden: Mapped[bool] = mapped_column(default=False)
+    override_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    safety_level: Mapped[str] = mapped_column(String(16), nullable=False)
+    rules_triggered: Mapped[dict] = mapped_column(JSONType, default=dict)
+    reasons: Mapped[dict] = mapped_column(JSONType, default=dict)
+    question: Mapped[str] = mapped_column(Text, nullable=False)
+    recommendation: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

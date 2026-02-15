@@ -40,8 +40,12 @@ export type DebateRun = {
   rounds: number;
   spawned_agents: string[];
   safety: {
+    policy_version: string;
     level: string;
-    action: string;
+    original_action: string;
+    effective_action: string;
+    overridden: boolean;
+    override_reason?: string | null;
     reasons: string[];
     rules_triggered: string[];
   };
@@ -51,6 +55,7 @@ export type DebateRun = {
 export type DebateMetrics = {
   total_runs: number;
   blocked_runs: number;
+  overridden_runs: number;
   winner_a: number;
   winner_b: number;
   avg_latency_ms: number;

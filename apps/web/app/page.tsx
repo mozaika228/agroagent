@@ -32,6 +32,8 @@ export default function HomePage() {
   const [pollJobs, setPollJobs] = useState(false);
   const [debateQuestion, setDebateQuestion] = useState("Drought strategy for spring wheat in WKO");
   const [debateRounds, setDebateRounds] = useState(2);
+  const [debateSafetyOverride, setDebateSafetyOverride] = useState(false);
+  const [debateOverrideReason, setDebateOverrideReason] = useState("");
   const [debateTraceId, setDebateTraceId] = useState("");
   const [debateRun, setDebateRun] = useState<DebateRun | null>(null);
   const [debateSteps, setDebateSteps] = useState<DebateStep[]>([]);
@@ -121,6 +123,8 @@ export default function HomePage() {
     setDebateRun(null);
     setDebateSteps([]);
     setDebateMetrics(null);
+    setDebateSafetyOverride(false);
+    setDebateOverrideReason("");
     setDebateTraceId("");
   }
 
@@ -323,7 +327,14 @@ export default function HomePage() {
       const response = await fetch(`${API_BASE}/v1/agents/debate`, {
         method: "POST",
         headers: jsonHeaders(),
-        body: JSON.stringify({ question: debateQuestion.trim(), locale: "ru", include_steps: true, rounds: debateRounds })
+        body: JSON.stringify({
+          question: debateQuestion.trim(),
+          locale: "ru",
+          include_steps: true,
+          rounds: debateRounds,
+          safety_override: debateSafetyOverride,
+          override_reason: debateSafetyOverride ? debateOverrideReason : null
+        })
       });
       if (!response.ok) throw new Error(`agent debate failed (${response.status})`);
       const data = await response.json();
@@ -424,15 +435,24 @@ export default function HomePage() {
       <DebatePanel
         question={debateQuestion}
         rounds={debateRounds}
+        safetyOverride={debateSafetyOverride}
+        overrideReason={debateOverrideReason}
         traceIdInput={debateTraceId}
         run={debateRun}
         traceSteps={debateSteps}
         metrics={debateMetrics}
         loading={debateLoading}
-        canRun={!!token && !debateLoading && debateQuestion.trim().length > 0}
+        canRun={
+          !!token &&
+          !debateLoading &&
+          debateQuestion.trim().length > 0 &&
+          (!debateSafetyOverride || debateOverrideReason.trim().length >= 8)
+        }
         canQuery={!!token}
         onQuestionChange={setDebateQuestion}
         onRoundsChange={(v) => setDebateRounds(Math.max(1, Math.min(4, v || 1)))}
+        onSafetyOverrideChange={setDebateSafetyOverride}
+        onOverrideReasonChange={setDebateOverrideReason}
         onTraceIdChange={setDebateTraceId}
         onRunDebate={() => onRunDebate().catch((e) => setError(String(e)))}
         onLoadTrace={() => onLoadDebateTrace().catch((e) => setError(String(e)))}

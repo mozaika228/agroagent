@@ -118,3 +118,21 @@ create table agent_steps (
 );
 
 create index if not exists ix_agent_steps_trace_id on agent_steps(trace_id);
+
+create table safety_audit_logs (
+  id varchar(36) primary key,
+  trace_id varchar(36) not null,
+  policy_version varchar(50) not null,
+  original_action varchar(16) not null,
+  effective_action varchar(16) not null,
+  overridden boolean not null default false,
+  override_reason text,
+  safety_level varchar(16) not null,
+  rules_triggered jsonb not null default '{}'::jsonb,
+  reasons jsonb not null default '{}'::jsonb,
+  question text not null,
+  recommendation text not null,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists ix_safety_audit_logs_trace_id on safety_audit_logs(trace_id);

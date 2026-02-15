@@ -44,6 +44,12 @@ paths:
   /v1/agents/metrics:
     get:
       summary: Read aggregate debate metrics (runs, winner split, latency, average rounds/steps)
+  /v1/agents/safety/audit:
+    get:
+      summary: List safety audit records (policy version, rules, override info)
+  /metrics:
+    get:
+      summary: Prometheus metrics endpoint for debate/safety counters
   /v1/tools/weather:
     post:
       summary: Weather tool
