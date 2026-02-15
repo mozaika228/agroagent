@@ -17,6 +17,7 @@ AI-agent platform for agriculture in West Kazakhstan.
 - Eval tracking with `run_id`, list, and detail endpoints
 - Dynamic hierarchical debate (root spawns sub-agents by query) + verifiable hash-chain viewer in web UI
 - Debate observability metrics endpoint (`total_runs`, winner split, average latency, avg rounds, avg steps)
+- Safety policy layer for debate answers (`allow/warn/block`) with explainable triggered rules
 - CI with web lint/build + API tests + coverage XML artifact
 
 ## Architecture At a Glance

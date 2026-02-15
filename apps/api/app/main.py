@@ -16,7 +16,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from .auth import create_access_token, get_current_user, hash_password, require_roles, verify_password
-from .agents.pipeline import run_hierarchical_debate
+from .agents.pipeline import AgentStepDraft, run_hierarchical_debate
 from .config import settings
 from .db import SessionLocal, get_db
 from .models import AgentStep, ChatMessage, ChatSession, Document, DocumentChunk, EvalRun, Job, ToolCall, User
@@ -29,10 +29,12 @@ from .rag import (
     generate_answer_with_context,
 )
 from .rate_limit import check_rate_limit
+from .safety import evaluate_agro_policy
 from .schemas import (
     AgentDebateOut,
     AgentMetricsOut,
     AgentDebateRequest,
+    AgentSafetyOut,
     AgentStepOut,
     AgentTraceOut,
     AuthLoginCreate,
@@ -69,6 +71,7 @@ _idem_store: dict[str, dict] = {}
 _debate_metrics_lock = Lock()
 _debate_metrics = {
     "total_runs": 0,
+    "blocked_runs": 0,
     "winner_a": 0,
     "winner_b": 0,
     "total_latency_ms": 0.0,
@@ -171,9 +174,13 @@ def _order_steps_by_chain(rows: list[AgentStep]) -> list[AgentStep]:
     return [*ordered, *remaining]
 
 
-def _update_debate_metrics(*, winner: str, latency_ms: float, trace_id: str, rounds: int, step_count: int) -> None:
+def _update_debate_metrics(
+    *, winner: str, latency_ms: float, trace_id: str, rounds: int, step_count: int, blocked: bool
+) -> None:
     with _debate_metrics_lock:
         _debate_metrics["total_runs"] += 1
+        if blocked:
+            _debate_metrics["blocked_runs"] += 1
         _debate_metrics["total_latency_ms"] += latency_ms
         _debate_metrics["total_rounds"] += rounds
         _debate_metrics["total_steps"] += step_count
@@ -618,12 +625,27 @@ def run_agent_debate(
 
     trace_id = str(uuid4())
     drafts, final = run_hierarchical_debate(payload.question, payload.locale, payload.rounds)
+    safety = evaluate_agro_policy(payload.question, final["answer"], payload.locale)
+    final_answer = safety.safe_alternative if safety.action == "block" else final["answer"]
+    policy_draft = AgentStepDraft(
+        agent_name="safety-policy-agent",
+        step_type="safety_policy",
+        payload={
+            "action": safety.action,
+            "level": safety.level,
+            "reasons": safety.reasons,
+            "rules_triggered": safety.rules_triggered,
+            "original_answer": final["answer"],
+            "final_answer": final_answer,
+        },
+    )
+    all_drafts = [*drafts, policy_draft]
 
     steps_out: list[AgentStepOut] = []
     step_hashes: list[str] = []
     parent_hash: str | None = None
     parent_step_id: str | None = None
-    for draft in drafts:
+    for draft in all_drafts:
         step_payload = {
             "question": payload.question,
             "agent_name": draft.agent_name,
@@ -667,16 +689,23 @@ def run_agent_debate(
         trace_id=trace_id,
         rounds=int(final["rounds"]),
         step_count=len(step_hashes),
+        blocked=safety.action == "block",
     )
     return AgentDebateOut(
         trace_id=trace_id,
         trace_digest=trace_digest,
-        answer=final["answer"],
+        answer=final_answer,
         winner=final["winner"],
         score_a=float(final["score_a"]),
         score_b=float(final["score_b"]),
         rounds=int(final["rounds"]),
         spawned_agents=[str(item) for item in final["spawned_agents"]],
+        safety=AgentSafetyOut(
+            level=safety.level,
+            action=safety.action,
+            reasons=safety.reasons,
+            rules_triggered=safety.rules_triggered,
+        ),
         steps=steps_out,
     )
 
@@ -726,6 +755,7 @@ def get_agent_metrics(
         avg_steps = (float(_debate_metrics["total_steps"]) / total_runs) if total_runs else 0.0
         return AgentMetricsOut(
             total_runs=total_runs,
+            blocked_runs=int(_debate_metrics["blocked_runs"]),
             winner_a=int(_debate_metrics["winner_a"]),
             winner_b=int(_debate_metrics["winner_b"]),
             avg_latency_ms=round(avg_latency, 2),

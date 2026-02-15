@@ -177,6 +177,13 @@ class AgentDebateRequest(BaseModel):
     rounds: int = 2
 
 
+class AgentSafetyOut(BaseModel):
+    level: str
+    action: str
+    reasons: list[str] = Field(default_factory=list)
+    rules_triggered: list[str] = Field(default_factory=list)
+
+
 class AgentStepOut(BaseModel):
     step_id: str
     agent_name: str
@@ -195,6 +202,7 @@ class AgentDebateOut(BaseModel):
     score_b: float
     rounds: int
     spawned_agents: list[str] = Field(default_factory=list)
+    safety: AgentSafetyOut
     steps: list[AgentStepOut] = Field(default_factory=list)
 
 
@@ -206,6 +214,7 @@ class AgentTraceOut(BaseModel):
 
 class AgentMetricsOut(BaseModel):
     total_runs: int
+    blocked_runs: int
     winner_a: int
     winner_b: int
     avg_latency_ms: float

@@ -255,6 +255,8 @@ export function DebatePanel(props: {
           <p><strong>Digest:</strong> <code>{props.run.trace_digest}</code></p>
           <p><strong>Rounds:</strong> {props.run.rounds}</p>
           <p><strong>Spawned:</strong> {props.run.spawned_agents.join(", ")}</p>
+          <p><strong>Safety:</strong> {props.run.safety.action} ({props.run.safety.level})</p>
+          {props.run.safety.reasons.length > 0 && <p className="muted">{props.run.safety.reasons.join(" | ")}</p>}
           <p><strong>Winner:</strong> {props.run.winner} | A: {props.run.score_a.toFixed(3)} | B: {props.run.score_b.toFixed(3)}</p>
           <p>{props.run.answer}</p>
         </div>
@@ -263,6 +265,7 @@ export function DebatePanel(props: {
       {props.metrics && (
         <div className="compareCard">
           <p><strong>Total runs:</strong> {props.metrics.total_runs}</p>
+          <p><strong>Blocked runs:</strong> {props.metrics.blocked_runs}</p>
           <p><strong>Winner split:</strong> A={props.metrics.winner_a}, B={props.metrics.winner_b}</p>
           <p><strong>Avg latency:</strong> {props.metrics.avg_latency_ms.toFixed(2)} ms</p>
           <p><strong>Avg rounds:</strong> {props.metrics.avg_rounds.toFixed(2)} | <strong>Avg steps:</strong> {props.metrics.avg_steps.toFixed(2)}</p>

@@ -39,11 +39,18 @@ export type DebateRun = {
   score_b: number;
   rounds: number;
   spawned_agents: string[];
+  safety: {
+    level: string;
+    action: string;
+    reasons: string[];
+    rules_triggered: string[];
+  };
   steps: DebateStep[];
 };
 
 export type DebateMetrics = {
   total_runs: number;
+  blocked_runs: number;
   winner_a: number;
   winner_b: number;
   avg_latency_ms: number;
