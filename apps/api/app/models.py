@@ -1,12 +1,14 @@
 ﻿from datetime import datetime
 from uuid import uuid4
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from pgvector.sqlalchemy import Vector
 
 from .db import Base
+
+JSONType = JSON().with_variant(JSONB, "postgresql")
 
 
 def gen_id() -> str:
@@ -59,7 +61,7 @@ class Document(Base):
     language: Mapped[str] = mapped_column(String(8), default="ru")
     status: Mapped[str] = mapped_column(String(32), default="processing")
     storage_path: Mapped[str] = mapped_column(Text, nullable=False)
-    metadata_json: Mapped[dict] = mapped_column("metadata", JSONB, default=dict)
+    metadata_json: Mapped[dict] = mapped_column("metadata", JSONType, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -74,7 +76,7 @@ class DocumentChunk(Base):
     embedding: Mapped[list[float]] = mapped_column(Vector(768), nullable=False)
     token_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
-    metadata_json: Mapped[dict] = mapped_column("metadata", JSONB, default=dict)
+    metadata_json: Mapped[dict] = mapped_column("metadata", JSONType, default=dict)
 
 
 class ToolCall(Base):
@@ -84,8 +86,8 @@ class ToolCall(Base):
     session_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("chat_sessions.id", ondelete="SET NULL"), nullable=True)
     message_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("chat_messages.id", ondelete="SET NULL"), nullable=True)
     tool_name: Mapped[str] = mapped_column(String(64), nullable=False)
-    input_json: Mapped[dict] = mapped_column("input", JSONB, default=dict)
-    output_json: Mapped[dict | None] = mapped_column("output", JSONB, nullable=True)
+    input_json: Mapped[dict] = mapped_column("input", JSONType, default=dict)
+    output_json: Mapped[dict | None] = mapped_column("output", JSONType, nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -98,7 +100,7 @@ class EvalRun(Base):
     dataset: Mapped[str] = mapped_column(String(100), nullable=False)
     model: Mapped[str] = mapped_column(String(100), nullable=False)
     status: Mapped[str] = mapped_column(String(20), default="queued")
-    metrics: Mapped[dict] = mapped_column(JSONB, default=dict)
+    metrics: Mapped[dict] = mapped_column(JSONType, default=dict)
     sample_size: Mapped[int] = mapped_column(Integer, default=50)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -109,8 +111,8 @@ class Job(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=gen_id)
     job_type: Mapped[str] = mapped_column(String(40), nullable=False)
     status: Mapped[str] = mapped_column(String(20), default="queued")
-    payload: Mapped[dict] = mapped_column(JSONB, default=dict)
-    result: Mapped[dict] = mapped_column(JSONB, default=dict)
+    payload: Mapped[dict] = mapped_column(JSONType, default=dict)
+    result: Mapped[dict] = mapped_column(JSONType, default=dict)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -125,5 +127,5 @@ class AgentStep(Base):
     step_type: Mapped[str] = mapped_column(String(32), nullable=False)
     parent_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     step_hash: Mapped[str] = mapped_column(String(64), nullable=False)
-    payload: Mapped[dict] = mapped_column(JSONB, default=dict)
+    payload: Mapped[dict] = mapped_column(JSONType, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
