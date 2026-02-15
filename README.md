@@ -94,6 +94,11 @@ curl -X POST http://localhost:8000/v1/rag/compare \
 - `GET /v1/agents/safety/audit`
 - `POST /v1/agents/safety/evals/run`
 - `GET /metrics`
+
+Safety eval report export:
+- set `export_report=true` in `POST /v1/agents/safety/evals/run`
+- optional `report_dir` and `report_name`
+- response returns `markdown_report_path` and `csv_mismatches_path`
 - `POST /v1/tools/weather`
 - `POST /v1/tools/ndvi`
 - `POST /v1/evals/run`

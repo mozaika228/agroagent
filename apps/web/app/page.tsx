@@ -40,6 +40,7 @@ export default function HomePage() {
   const [debateMetrics, setDebateMetrics] = useState<DebateMetrics | null>(null);
   const [debateLoading, setDebateLoading] = useState(false);
   const [safetyEvalRounds, setSafetyEvalRounds] = useState(2);
+  const [safetyEvalExportReport, setSafetyEvalExportReport] = useState(true);
   const [safetyEvalLoading, setSafetyEvalLoading] = useState(false);
   const [safetyEvalResult, setSafetyEvalResult] = useState<SafetyEvalResult | null>(null);
 
@@ -387,7 +388,12 @@ export default function HomePage() {
       const response = await fetch(`${API_BASE}/v1/agents/safety/evals/run`, {
         method: "POST",
         headers: jsonHeaders(),
-        body: JSON.stringify({ rounds: safetyEvalRounds, save_eval: true, model: "safety_policy_v1" })
+        body: JSON.stringify({
+          rounds: safetyEvalRounds,
+          save_eval: true,
+          model: "safety_policy_v1",
+          export_report: safetyEvalExportReport
+        })
       });
       if (!response.ok) throw new Error(`safety eval failed (${response.status})`);
       const data = await response.json();
@@ -485,10 +491,12 @@ export default function HomePage() {
 
       <SafetyBenchmarkPanel
         rounds={safetyEvalRounds}
+        exportReport={safetyEvalExportReport}
         loading={safetyEvalLoading}
         canRun={!!token && !safetyEvalLoading}
         result={safetyEvalResult}
         onRoundsChange={(v) => setSafetyEvalRounds(Math.max(1, Math.min(4, v || 1)))}
+        onExportReportChange={setSafetyEvalExportReport}
         onRun={() => onRunSafetyEval().catch((e) => setError(String(e)))}
       />
 

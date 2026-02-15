@@ -152,12 +152,23 @@ def test_safety_eval_endpoint_runs_and_saves(tmp_path: Path):
     resp = client.post(
         "/v1/agents/safety/evals/run",
         headers={"Authorization": f"Bearer {token}"},
-        json={"rounds": 2, "save_eval": True, "model": "safety_policy_v1"},
+        json={
+            "rounds": 2,
+            "save_eval": True,
+            "model": "safety_policy_v1",
+            "export_report": True,
+            "report_dir": str(tmp_path),
+            "report_name": "safety_eval_test",
+        },
     )
     assert resp.status_code == 200
     data = resp.json()
     assert data["total"] > 0
     assert 0.0 <= data["accuracy"] <= 1.0
     assert data["run_id"] is not None
+    assert data["markdown_report_path"] is not None
+    assert data["csv_mismatches_path"] is not None
+    assert Path(data["markdown_report_path"]).exists()
+    assert Path(data["csv_mismatches_path"]).exists()
 
     app.dependency_overrides.clear()

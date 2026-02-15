@@ -256,6 +256,9 @@ class SafetyEvalRunCreate(BaseModel):
     rounds: int = 2
     save_eval: bool = True
     model: str = "safety_policy_v1"
+    export_report: bool = False
+    report_dir: str | None = None
+    report_name: str | None = None
 
 
 class SafetyEvalRunOut(BaseModel):
@@ -270,4 +273,6 @@ class SafetyEvalRunOut(BaseModel):
     allow_precision: float
     allow_recall: float
     mismatches: list[dict[str, Any]] = Field(default_factory=list)
+    markdown_report_path: str | None = None
+    csv_mismatches_path: str | None = None
 

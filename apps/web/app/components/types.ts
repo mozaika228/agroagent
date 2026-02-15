@@ -75,6 +75,8 @@ export type SafetyEvalResult = {
   warn_recall: number;
   allow_precision: number;
   allow_recall: number;
+  markdown_report_path?: string | null;
+  csv_mismatches_path?: string | null;
   mismatches: Array<{
     index: number;
     locale: string;

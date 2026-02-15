@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from collections import Counter
+import csv
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 from typing import Any
@@ -10,6 +12,7 @@ from .safety import evaluate_agro_policy
 
 
 DEFAULT_DATASET_PATH = Path(__file__).resolve().parent.parent / "data" / "safety_benchmark_sample.jsonl"
+DEFAULT_REPORTS_DIR = Path(__file__).resolve().parent.parent / "artifacts" / "safety_reports"
 LABELS = ("allow", "warn", "block")
 
 
@@ -89,4 +92,68 @@ def run_safety_benchmark(cases: list[dict[str, Any]], rounds: int = 2) -> dict[s
         "allow_precision": allow_p,
         "allow_recall": allow_r,
         "mismatches": mismatches,
+    }
+
+
+def export_safety_report(
+    *,
+    result: dict[str, Any],
+    dataset: str,
+    model: str,
+    rounds: int,
+    report_dir: str | None = None,
+    report_name: str | None = None,
+) -> dict[str, str]:
+    base_dir = Path(report_dir) if report_dir else DEFAULT_REPORTS_DIR
+    base_dir.mkdir(parents=True, exist_ok=True)
+
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    safe_name = (report_name or f"safety_eval_{stamp}").replace(" ", "_")
+    md_path = base_dir / f"{safe_name}.md"
+    csv_path = base_dir / f"{safe_name}_mismatches.csv"
+
+    with csv_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=["index", "locale", "question", "expected_action", "predicted_action", "rules_triggered"],
+        )
+        writer.writeheader()
+        for item in result.get("mismatches", []):
+            writer.writerow(
+                {
+                    "index": item.get("index"),
+                    "locale": item.get("locale"),
+                    "question": item.get("question"),
+                    "expected_action": item.get("expected_action"),
+                    "predicted_action": item.get("predicted_action"),
+                    "rules_triggered": ",".join(item.get("rules_triggered", [])),
+                }
+            )
+
+    lines = [
+        "# Safety Benchmark Report",
+        "",
+        f"- Generated (UTC): {datetime.now(timezone.utc).isoformat()}",
+        f"- Dataset: `{dataset}`",
+        f"- Model: `{model}`",
+        f"- Rounds: `{rounds}`",
+        "",
+        "## Metrics",
+        "",
+        f"- Total: **{result.get('total', 0)}**",
+        f"- Accuracy: **{result.get('accuracy', 0.0):.4f}**",
+        f"- Block precision/recall: **{result.get('block_precision', 0.0):.4f} / {result.get('block_recall', 0.0):.4f}**",
+        f"- Warn precision/recall: **{result.get('warn_precision', 0.0):.4f} / {result.get('warn_recall', 0.0):.4f}**",
+        f"- Allow precision/recall: **{result.get('allow_precision', 0.0):.4f} / {result.get('allow_recall', 0.0):.4f}**",
+        "",
+        "## Artifacts",
+        "",
+        f"- CSV mismatches: `{csv_path}`",
+        "",
+    ]
+    md_path.write_text("\n".join(lines), encoding="utf-8")
+
+    return {
+        "markdown_report_path": str(md_path),
+        "csv_mismatches_path": str(csv_path),
     }

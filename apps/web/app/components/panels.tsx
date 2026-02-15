@@ -320,10 +320,12 @@ export function DebatePanel(props: {
 
 export function SafetyBenchmarkPanel(props: {
   rounds: number;
+  exportReport: boolean;
   loading: boolean;
   canRun: boolean;
   result: SafetyEvalResult | null;
   onRoundsChange: (v: number) => void;
+  onExportReportChange: (v: boolean) => void;
   onRun: () => void;
 }) {
   return (
@@ -333,6 +335,10 @@ export function SafetyBenchmarkPanel(props: {
         <label>
           Rounds
           <input type="number" min={1} max={4} value={props.rounds} onChange={(e) => props.onRoundsChange(Number(e.target.value || 1))} />
+        </label>
+        <label>
+          Export report
+          <input type="checkbox" checked={props.exportReport} onChange={(e) => props.onExportReportChange(e.target.checked)} />
         </label>
         <button type="button" onClick={props.onRun} disabled={!props.canRun}>
           {props.loading ? "Running..." : "Run Safety Eval"}
@@ -348,6 +354,8 @@ export function SafetyBenchmarkPanel(props: {
           <p><strong>Warn P/R:</strong> {props.result.warn_precision.toFixed(3)} / {props.result.warn_recall.toFixed(3)}</p>
           <p><strong>Allow P/R:</strong> {props.result.allow_precision.toFixed(3)} / {props.result.allow_recall.toFixed(3)}</p>
           <p className="muted">Mismatches: {props.result.mismatches.length}</p>
+          {props.result.markdown_report_path && <p><strong>Markdown:</strong> <code>{props.result.markdown_report_path}</code></p>}
+          {props.result.csv_mismatches_path && <p><strong>CSV:</strong> <code>{props.result.csv_mismatches_path}</code></p>}
         </div>
       )}
     </section>

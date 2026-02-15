@@ -32,7 +32,7 @@ from .rag import (
 )
 from .rate_limit import check_rate_limit
 from .safety import evaluate_agro_policy
-from .safety_eval import load_safety_cases, run_safety_benchmark
+from .safety_eval import export_safety_report, load_safety_cases, run_safety_benchmark
 from .schemas import (
     AgentDebateOut,
     AgentMetricsOut,
@@ -927,6 +927,17 @@ def run_safety_eval(
         db.refresh(run)
         run_id = run.id
 
+    report_paths: dict[str, str] = {}
+    if payload.export_report:
+        report_paths = export_safety_report(
+            result=result,
+            dataset=dataset_name,
+            model=payload.model,
+            rounds=payload.rounds,
+            report_dir=payload.report_dir,
+            report_name=payload.report_name,
+        )
+
     return SafetyEvalRunOut(
         run_id=run_id,
         dataset=dataset_name,
@@ -939,6 +950,8 @@ def run_safety_eval(
         allow_precision=float(result["allow_precision"]),
         allow_recall=float(result["allow_recall"]),
         mismatches=[dict(item) for item in result["mismatches"]],
+        markdown_report_path=report_paths.get("markdown_report_path"),
+        csv_mismatches_path=report_paths.get("csv_mismatches_path"),
     )
 
 
