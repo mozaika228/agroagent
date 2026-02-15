@@ -15,8 +15,8 @@ AI-agent platform for agriculture in West Kazakhstan.
 - Redis-backed rate limiting (with in-memory fallback)
 - Weather tool (Open-Meteo), NDVI RGB-proxy tool
 - Eval tracking with `run_id`, list, and detail endpoints
-- Hierarchical debate trace endpoint + verifiable hash-chain viewer in web UI
-- Debate observability metrics endpoint (`total_runs`, winner split, average latency)
+- Dynamic hierarchical debate (root spawns sub-agents by query) + verifiable hash-chain viewer in web UI
+- Debate observability metrics endpoint (`total_runs`, winner split, average latency, avg rounds, avg steps)
 - CI with web lint/build + API tests + coverage XML artifact
 
 ## Architecture At a Glance

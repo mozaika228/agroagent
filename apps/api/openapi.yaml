@@ -37,13 +37,13 @@ paths:
       summary: A/B compare retrieval profiles for same query
   /v1/agents/debate:
     post:
-      summary: Run hierarchical agents with debate + verifier and return verifiable step chain
+      summary: Run dynamic hierarchical agents with multi-round debate and return verifiable trace digest
   /v1/agents/traces/{trace_id}:
     get:
       summary: Read stored debate trace steps by trace ID
   /v1/agents/metrics:
     get:
-      summary: Read aggregate debate metrics (runs, winner split, latency)
+      summary: Read aggregate debate metrics (runs, winner split, latency, average rounds/steps)
   /v1/tools/weather:
     post:
       summary: Weather tool

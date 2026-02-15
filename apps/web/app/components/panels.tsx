@@ -204,6 +204,7 @@ export function JobsPanel(props: {
 
 export function DebatePanel(props: {
   question: string;
+  rounds: number;
   traceIdInput: string;
   run: DebateRun | null;
   traceSteps: DebateStep[];
@@ -212,6 +213,7 @@ export function DebatePanel(props: {
   canRun: boolean;
   canQuery: boolean;
   onQuestionChange: (v: string) => void;
+  onRoundsChange: (v: number) => void;
   onTraceIdChange: (v: string) => void;
   onRunDebate: () => void;
   onLoadTrace: () => void;
@@ -228,6 +230,16 @@ export function DebatePanel(props: {
           placeholder="Drought strategy for spring wheat in WKO"
         />
         <div className="row">
+          <label>
+            Rounds
+            <input
+              type="number"
+              min={1}
+              max={4}
+              value={props.rounds}
+              onChange={(e) => props.onRoundsChange(Number(e.target.value || 1))}
+            />
+          </label>
           <button type="button" onClick={props.onRunDebate} disabled={!props.canRun}>
             {props.loading ? "Running..." : "Run Debate"}
           </button>
@@ -240,6 +252,9 @@ export function DebatePanel(props: {
       {props.run && (
         <div className="compareCard">
           <p><strong>Trace:</strong> <code>{props.run.trace_id}</code></p>
+          <p><strong>Digest:</strong> <code>{props.run.trace_digest}</code></p>
+          <p><strong>Rounds:</strong> {props.run.rounds}</p>
+          <p><strong>Spawned:</strong> {props.run.spawned_agents.join(", ")}</p>
           <p><strong>Winner:</strong> {props.run.winner} | A: {props.run.score_a.toFixed(3)} | B: {props.run.score_b.toFixed(3)}</p>
           <p>{props.run.answer}</p>
         </div>
@@ -250,6 +265,7 @@ export function DebatePanel(props: {
           <p><strong>Total runs:</strong> {props.metrics.total_runs}</p>
           <p><strong>Winner split:</strong> A={props.metrics.winner_a}, B={props.metrics.winner_b}</p>
           <p><strong>Avg latency:</strong> {props.metrics.avg_latency_ms.toFixed(2)} ms</p>
+          <p><strong>Avg rounds:</strong> {props.metrics.avg_rounds.toFixed(2)} | <strong>Avg steps:</strong> {props.metrics.avg_steps.toFixed(2)}</p>
           {props.metrics.last_trace_id && <p><strong>Last trace:</strong> <code>{props.metrics.last_trace_id}</code></p>}
         </div>
       )}

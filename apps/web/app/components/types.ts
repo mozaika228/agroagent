@@ -32,10 +32,13 @@ export type DebateStep = {
 
 export type DebateRun = {
   trace_id: string;
+  trace_digest: string;
   answer: string;
   winner: string;
   score_a: number;
   score_b: number;
+  rounds: number;
+  spawned_agents: string[];
   steps: DebateStep[];
 };
 
@@ -44,5 +47,7 @@ export type DebateMetrics = {
   winner_a: number;
   winner_b: number;
   avg_latency_ms: number;
+  avg_rounds: number;
+  avg_steps: number;
   last_trace_id?: string | null;
 };

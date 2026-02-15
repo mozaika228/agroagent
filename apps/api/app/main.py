@@ -72,6 +72,8 @@ _debate_metrics = {
     "winner_a": 0,
     "winner_b": 0,
     "total_latency_ms": 0.0,
+    "total_rounds": 0,
+    "total_steps": 0,
     "last_trace_id": None,
 }
 app = FastAPI(title="AgroAgent API", version="0.3.0")
@@ -131,10 +133,17 @@ def _compute_step_hash(parent_hash: str | None, payload: dict) -> str:
     return hashlib.sha256(chain_input.encode("utf-8")).hexdigest()
 
 
-def _update_debate_metrics(*, winner: str, latency_ms: float, trace_id: str) -> None:
+def _compute_trace_digest(step_hashes: list[str]) -> str:
+    raw = "::".join(step_hashes)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _update_debate_metrics(*, winner: str, latency_ms: float, trace_id: str, rounds: int, step_count: int) -> None:
     with _debate_metrics_lock:
         _debate_metrics["total_runs"] += 1
         _debate_metrics["total_latency_ms"] += latency_ms
+        _debate_metrics["total_rounds"] += rounds
+        _debate_metrics["total_steps"] += step_count
         if winner == "A":
             _debate_metrics["winner_a"] += 1
         elif winner == "B":
@@ -575,9 +584,10 @@ def run_agent_debate(
     started = time.perf_counter()
 
     trace_id = str(uuid4())
-    drafts, final = run_hierarchical_debate(payload.question, payload.locale)
+    drafts, final = run_hierarchical_debate(payload.question, payload.locale, payload.rounds)
 
     steps_out: list[AgentStepOut] = []
+    step_hashes: list[str] = []
     parent_hash: str | None = None
     parent_step_id: str | None = None
     for draft in drafts:
@@ -599,6 +609,7 @@ def run_agent_debate(
         )
         db.add(step)
         db.flush()
+        step_hashes.append(step_hash)
 
         if payload.include_steps:
             steps_out.append(
@@ -616,13 +627,23 @@ def run_agent_debate(
 
     db.commit()
     elapsed_ms = (time.perf_counter() - started) * 1000.0
-    _update_debate_metrics(winner=str(final["winner"]), latency_ms=elapsed_ms, trace_id=trace_id)
+    trace_digest = _compute_trace_digest(step_hashes)
+    _update_debate_metrics(
+        winner=str(final["winner"]),
+        latency_ms=elapsed_ms,
+        trace_id=trace_id,
+        rounds=int(final["rounds"]),
+        step_count=len(step_hashes),
+    )
     return AgentDebateOut(
         trace_id=trace_id,
+        trace_digest=trace_digest,
         answer=final["answer"],
         winner=final["winner"],
         score_a=float(final["score_a"]),
         score_b=float(final["score_b"]),
+        rounds=int(final["rounds"]),
+        spawned_agents=[str(item) for item in final["spawned_agents"]],
         steps=steps_out,
     )
 
@@ -636,11 +657,18 @@ def get_agent_trace(
 ) -> AgentTraceOut:
     check_rate_limit(request)
     _ = user
-    rows = db.query(AgentStep).filter(AgentStep.trace_id == trace_id).order_by(AgentStep.created_at.asc()).all()
+    rows = (
+        db.query(AgentStep)
+        .filter(AgentStep.trace_id == trace_id)
+        .order_by(AgentStep.created_at.asc(), AgentStep.id.asc())
+        .all()
+    )
     if not rows:
         raise HTTPException(status_code=404, detail="trace not found")
+    step_hashes = [row.step_hash for row in rows]
     return AgentTraceOut(
         trace_id=trace_id,
+        trace_digest=_compute_trace_digest(step_hashes),
         steps=[
             AgentStepOut(
                 step_id=row.id,
@@ -665,11 +693,15 @@ def get_agent_metrics(
     with _debate_metrics_lock:
         total_runs = int(_debate_metrics["total_runs"])
         avg_latency = (float(_debate_metrics["total_latency_ms"]) / total_runs) if total_runs else 0.0
+        avg_rounds = (float(_debate_metrics["total_rounds"]) / total_runs) if total_runs else 0.0
+        avg_steps = (float(_debate_metrics["total_steps"]) / total_runs) if total_runs else 0.0
         return AgentMetricsOut(
             total_runs=total_runs,
             winner_a=int(_debate_metrics["winner_a"]),
             winner_b=int(_debate_metrics["winner_b"]),
             avg_latency_ms=round(avg_latency, 2),
+            avg_rounds=round(avg_rounds, 2),
+            avg_steps=round(avg_steps, 2),
             last_trace_id=_debate_metrics["last_trace_id"],
         )
 

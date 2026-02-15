@@ -174,6 +174,7 @@ class AgentDebateRequest(BaseModel):
     question: str
     locale: str = "ru"
     include_steps: bool = True
+    rounds: int = 2
 
 
 class AgentStepOut(BaseModel):
@@ -187,15 +188,19 @@ class AgentStepOut(BaseModel):
 
 class AgentDebateOut(BaseModel):
     trace_id: str
+    trace_digest: str
     answer: str
     winner: str
     score_a: float
     score_b: float
+    rounds: int
+    spawned_agents: list[str] = Field(default_factory=list)
     steps: list[AgentStepOut] = Field(default_factory=list)
 
 
 class AgentTraceOut(BaseModel):
     trace_id: str
+    trace_digest: str
     steps: list[AgentStepOut] = Field(default_factory=list)
 
 
@@ -204,5 +209,7 @@ class AgentMetricsOut(BaseModel):
     winner_a: int
     winner_b: int
     avg_latency_ms: float
+    avg_rounds: float
+    avg_steps: float
     last_trace_id: str | None = None
 

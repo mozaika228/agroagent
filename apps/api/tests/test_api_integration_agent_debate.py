@@ -47,12 +47,15 @@ def test_agent_debate_returns_verifiable_chain(tmp_path: Path):
     resp = client.post(
         "/v1/agents/debate",
         headers={"Authorization": f"Bearer {token}"},
-        json={"question": "Drought strategy for spring wheat", "locale": "ru", "include_steps": True},
+        json={"question": "Drought strategy for spring wheat", "locale": "ru", "include_steps": True, "rounds": 3},
     )
     assert resp.status_code == 200
     data = resp.json()
     assert data["winner"] in {"A", "B"}
-    assert len(data["steps"]) >= 5
+    assert data["rounds"] == 3
+    assert len(data["spawned_agents"]) >= 3
+    assert len(data["steps"]) >= 10
+    assert isinstance(data["trace_digest"], str) and len(data["trace_digest"]) == 64
     assert data["steps"][0]["parent_hash"] is None
     for i in range(1, len(data["steps"])):
         assert data["steps"][i]["parent_hash"] == data["steps"][i - 1]["step_hash"]
@@ -62,6 +65,7 @@ def test_agent_debate_returns_verifiable_chain(tmp_path: Path):
     assert trace_resp.status_code == 200
     trace_data = trace_resp.json()
     assert trace_data["trace_id"] == trace_id
+    assert trace_data["trace_digest"] == data["trace_digest"]
     assert len(trace_data["steps"]) == len(data["steps"])
 
     metrics_resp = client.get("/v1/agents/metrics", headers={"Authorization": f"Bearer {token}"})
@@ -71,5 +75,7 @@ def test_agent_debate_returns_verifiable_chain(tmp_path: Path):
     assert metrics["last_trace_id"] == trace_id
     assert metrics["winner_a"] + metrics["winner_b"] >= 1
     assert isinstance(metrics["avg_latency_ms"], float)
+    assert metrics["avg_rounds"] >= 1.0
+    assert metrics["avg_steps"] >= 1.0
 
     app.dependency_overrides.clear()
