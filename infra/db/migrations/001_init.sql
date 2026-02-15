@@ -104,3 +104,17 @@ create table jobs (
   error text,
   created_at timestamptz not null default now()
 );
+
+create table agent_steps (
+  id uuid primary key default gen_random_uuid(),
+  trace_id uuid not null,
+  parent_step_id uuid,
+  agent_name text not null,
+  step_type text not null,
+  parent_hash text,
+  step_hash text not null,
+  payload jsonb not null default ''{}''::jsonb,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists ix_agent_steps_trace_id on agent_steps(trace_id);

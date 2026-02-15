@@ -20,3 +20,29 @@ export type JobItem = {
   result: Record<string, unknown>;
   error?: string | null;
 };
+
+export type DebateStep = {
+  step_id: string;
+  agent_name: string;
+  step_type: string;
+  step_hash: string;
+  parent_hash?: string | null;
+  payload: Record<string, unknown>;
+};
+
+export type DebateRun = {
+  trace_id: string;
+  answer: string;
+  winner: string;
+  score_a: number;
+  score_b: number;
+  steps: DebateStep[];
+};
+
+export type DebateMetrics = {
+  total_runs: number;
+  winner_a: number;
+  winner_b: number;
+  avg_latency_ms: number;
+  last_trace_id?: string | null;
+};

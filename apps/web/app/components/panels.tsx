@@ -1,5 +1,5 @@
 import { FormEvent } from "react";
-import { CompareResult, EvalItem, JobItem, Msg, UploadItem } from "./types";
+import { CompareResult, DebateMetrics, DebateRun, DebateStep, EvalItem, JobItem, Msg, UploadItem } from "./types";
 
 export function HeroPanel(props: { apiBase: string; role: string | null; sessionId: string | null }) {
   return (
@@ -195,6 +195,82 @@ export function JobsPanel(props: {
             <code>{j.job_id.slice(0, 10)}...</code>
             <span>{j.job_type}</span>
             <span>{j.status}</span>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+export function DebatePanel(props: {
+  question: string;
+  traceIdInput: string;
+  run: DebateRun | null;
+  traceSteps: DebateStep[];
+  metrics: DebateMetrics | null;
+  loading: boolean;
+  canRun: boolean;
+  canQuery: boolean;
+  onQuestionChange: (v: string) => void;
+  onTraceIdChange: (v: string) => void;
+  onRunDebate: () => void;
+  onLoadTrace: () => void;
+  onLoadMetrics: () => void;
+}) {
+  return (
+    <section className="panel">
+      <h2>Agent Debate Trace</h2>
+      <div className="stack">
+        <textarea
+          value={props.question}
+          onChange={(e) => props.onQuestionChange(e.target.value)}
+          rows={3}
+          placeholder="Drought strategy for spring wheat in WKO"
+        />
+        <div className="row">
+          <button type="button" onClick={props.onRunDebate} disabled={!props.canRun}>
+            {props.loading ? "Running..." : "Run Debate"}
+          </button>
+          <button type="button" onClick={props.onLoadMetrics} disabled={!props.canQuery}>
+            Load Metrics
+          </button>
+        </div>
+      </div>
+
+      {props.run && (
+        <div className="compareCard">
+          <p><strong>Trace:</strong> <code>{props.run.trace_id}</code></p>
+          <p><strong>Winner:</strong> {props.run.winner} | A: {props.run.score_a.toFixed(3)} | B: {props.run.score_b.toFixed(3)}</p>
+          <p>{props.run.answer}</p>
+        </div>
+      )}
+
+      {props.metrics && (
+        <div className="compareCard">
+          <p><strong>Total runs:</strong> {props.metrics.total_runs}</p>
+          <p><strong>Winner split:</strong> A={props.metrics.winner_a}, B={props.metrics.winner_b}</p>
+          <p><strong>Avg latency:</strong> {props.metrics.avg_latency_ms.toFixed(2)} ms</p>
+          {props.metrics.last_trace_id && <p><strong>Last trace:</strong> <code>{props.metrics.last_trace_id}</code></p>}
+        </div>
+      )}
+
+      <div className="row">
+        <input value={props.traceIdInput} onChange={(e) => props.onTraceIdChange(e.target.value)} placeholder="trace_id" />
+        <button type="button" onClick={props.onLoadTrace} disabled={!props.traceIdInput.trim() || !props.canQuery}>
+          Load Trace
+        </button>
+      </div>
+
+      <div className="table">
+        {props.traceSteps.length === 0 && <p className="muted">No trace loaded.</p>}
+        {props.traceSteps.map((step) => (
+          <div key={step.step_id} className="traceStep">
+            <div className="row spread">
+              <strong>{step.agent_name}</strong>
+              <span>{step.step_type}</span>
+            </div>
+            <small>hash: {step.step_hash.slice(0, 16)}...</small>
+            <small>parent: {step.parent_hash ? `${step.parent_hash.slice(0, 16)}...` : "GENESIS"}</small>
           </div>
         ))}
       </div>

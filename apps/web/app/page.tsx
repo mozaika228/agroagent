@@ -1,9 +1,9 @@
 ﻿"use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 
-import { AuthPanel, ChatPanel, ComparePanel, DocumentsPanel, EvalsPanel, HeroPanel, JobsPanel } from "./components/panels";
-import { CompareResult, EvalItem, JobItem, Msg, Source, UploadItem } from "./components/types";
+import { AuthPanel, ChatPanel, ComparePanel, DebatePanel, DocumentsPanel, EvalsPanel, HeroPanel, JobsPanel } from "./components/panels";
+import { CompareResult, DebateMetrics, DebateRun, DebateStep, EvalItem, JobItem, Msg, Source, UploadItem } from "./components/types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
 
@@ -30,9 +30,19 @@ export default function HomePage() {
   const [evalRunId, setEvalRunId] = useState("");
   const [jobs, setJobs] = useState<JobItem[]>([]);
   const [pollJobs, setPollJobs] = useState(false);
+  const [debateQuestion, setDebateQuestion] = useState("Drought strategy for spring wheat in WKO");
+  const [debateTraceId, setDebateTraceId] = useState("");
+  const [debateRun, setDebateRun] = useState<DebateRun | null>(null);
+  const [debateSteps, setDebateSteps] = useState<DebateStep[]>([]);
+  const [debateMetrics, setDebateMetrics] = useState<DebateMetrics | null>(null);
+  const [debateLoading, setDebateLoading] = useState(false);
 
   const canSend = useMemo(() => text.trim().length > 0 && !sending && !!token, [text, sending, token]);
-  const authHeaders: HeadersInit = token ? { Authorization: `Bearer ${token}` } : {};
+  const authHeaders = useMemo(() => {
+    const headers = new Headers();
+    if (token) headers.set("Authorization", `Bearer ${token}`);
+    return headers;
+  }, [token]);
 
   function jsonHeaders(): HeadersInit {
     return token
@@ -107,6 +117,10 @@ export default function HomePage() {
     setLastCompareRunId(null);
     setEvals([]);
     setJobs([]);
+    setDebateRun(null);
+    setDebateSteps([]);
+    setDebateMetrics(null);
+    setDebateTraceId("");
   }
 
   async function ensureSession(): Promise<string> {
@@ -260,7 +274,7 @@ export default function HomePage() {
     }
   }
 
-  async function onLoadJobs() {
+  const onLoadJobs = useCallback(async () => {
     if (!token) return;
     setError(null);
     try {
@@ -271,7 +285,7 @@ export default function HomePage() {
     } catch (err) {
       setError(asErr(err));
     }
-  }
+  }, [token, authHeaders]);
 
   useEffect(() => {
     if (!pollJobs || !token) return;
@@ -279,7 +293,7 @@ export default function HomePage() {
       onLoadJobs().catch(() => undefined);
     }, 5000);
     return () => clearInterval(id);
-  }, [pollJobs, token]);
+  }, [pollJobs, token, onLoadJobs]);
 
   async function onFetchEvalById() {
     if (!evalRunId.trim() || !token) return;
@@ -295,6 +309,55 @@ export default function HomePage() {
           text: `Eval ${data.run_id}\nDataset: ${data.dataset}\nModel: ${data.model}\nStatus: ${data.status}\nMetrics: ${JSON.stringify(data.metrics)}`
         }
       ]);
+    } catch (err) {
+      setError(asErr(err));
+    }
+  }
+
+  async function onRunDebate() {
+    if (!debateQuestion.trim() || !token) return;
+    setError(null);
+    setDebateLoading(true);
+    try {
+      const response = await fetch(`${API_BASE}/v1/agents/debate`, {
+        method: "POST",
+        headers: jsonHeaders(),
+        body: JSON.stringify({ question: debateQuestion.trim(), locale: "ru", include_steps: true })
+      });
+      if (!response.ok) throw new Error(`agent debate failed (${response.status})`);
+      const data = await response.json();
+      const run = data as DebateRun;
+      setDebateRun(run);
+      setDebateTraceId(run.trace_id);
+      setDebateSteps(run.steps ?? []);
+    } catch (err) {
+      setError(asErr(err));
+    } finally {
+      setDebateLoading(false);
+    }
+  }
+
+  async function onLoadDebateTrace() {
+    if (!debateTraceId.trim() || !token) return;
+    setError(null);
+    try {
+      const response = await fetch(`${API_BASE}/v1/agents/traces/${debateTraceId.trim()}`, { headers: authHeaders });
+      if (!response.ok) throw new Error(`trace load failed (${response.status})`);
+      const data = await response.json();
+      setDebateSteps((data.steps ?? []) as DebateStep[]);
+    } catch (err) {
+      setError(asErr(err));
+    }
+  }
+
+  async function onLoadDebateMetrics() {
+    if (!token) return;
+    setError(null);
+    try {
+      const response = await fetch(`${API_BASE}/v1/agents/metrics`, { headers: authHeaders });
+      if (!response.ok) throw new Error(`metrics load failed (${response.status})`);
+      const data = await response.json();
+      setDebateMetrics(data as DebateMetrics);
     } catch (err) {
       setError(asErr(err));
     }
@@ -355,6 +418,22 @@ export default function HomePage() {
         canQuery={!!token}
         onLoadJobs={() => onLoadJobs().catch((e) => setError(String(e)))}
         onTogglePolling={() => setPollJobs((v) => !v)}
+      />
+
+      <DebatePanel
+        question={debateQuestion}
+        traceIdInput={debateTraceId}
+        run={debateRun}
+        traceSteps={debateSteps}
+        metrics={debateMetrics}
+        loading={debateLoading}
+        canRun={!!token && !debateLoading && debateQuestion.trim().length > 0}
+        canQuery={!!token}
+        onQuestionChange={setDebateQuestion}
+        onTraceIdChange={setDebateTraceId}
+        onRunDebate={() => onRunDebate().catch((e) => setError(String(e)))}
+        onLoadTrace={() => onLoadDebateTrace().catch((e) => setError(String(e)))}
+        onLoadMetrics={() => onLoadDebateMetrics().catch((e) => setError(String(e)))}
       />
 
       {error && <section className="panel error">Error: {error}</section>}

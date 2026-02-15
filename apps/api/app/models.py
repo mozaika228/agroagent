@@ -113,3 +113,17 @@ class Job(Base):
     result: Mapped[dict] = mapped_column(JSONB, default=dict)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AgentStep(Base):
+    __tablename__ = "agent_steps"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=gen_id)
+    trace_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    parent_step_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    agent_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    step_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    parent_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    step_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSONB, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

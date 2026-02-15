@@ -3,6 +3,9 @@ from pathlib import Path
 from uuid import uuid4
 import logging
 from threading import Lock
+import hashlib
+import json
+import time
 
 import httpx
 import numpy as np
@@ -13,9 +16,10 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from .auth import create_access_token, get_current_user, hash_password, require_roles, verify_password
+from .agents.pipeline import run_hierarchical_debate
 from .config import settings
 from .db import SessionLocal, get_db
-from .models import ChatMessage, ChatSession, Document, DocumentChunk, EvalRun, Job, ToolCall, User
+from .models import AgentStep, ChatMessage, ChatSession, Document, DocumentChunk, EvalRun, Job, ToolCall, User
 from .rag import (
     VECTOR_DIM,
     bm25_scores,
@@ -26,6 +30,11 @@ from .rag import (
 )
 from .rate_limit import check_rate_limit
 from .schemas import (
+    AgentDebateOut,
+    AgentMetricsOut,
+    AgentDebateRequest,
+    AgentStepOut,
+    AgentTraceOut,
     AuthLoginCreate,
     AuthRegisterCreate,
     AuthTokenOut,
@@ -57,6 +66,14 @@ logger = logging.getLogger("agroagent.api")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 _idem_lock = Lock()
 _idem_store: dict[str, dict] = {}
+_debate_metrics_lock = Lock()
+_debate_metrics = {
+    "total_runs": 0,
+    "winner_a": 0,
+    "winner_b": 0,
+    "total_latency_ms": 0.0,
+    "last_trace_id": None,
+}
 app = FastAPI(title="AgroAgent API", version="0.3.0")
 
 app.add_middleware(
@@ -106,6 +123,23 @@ def _idem_set(namespace: str, key: str | None, value: dict) -> None:
         return
     with _idem_lock:
         _idem_store[f"{namespace}:{key}"] = value
+
+
+def _compute_step_hash(parent_hash: str | None, payload: dict) -> str:
+    raw = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    chain_input = f"{parent_hash or 'GENESIS'}::{raw}"
+    return hashlib.sha256(chain_input.encode("utf-8")).hexdigest()
+
+
+def _update_debate_metrics(*, winner: str, latency_ms: float, trace_id: str) -> None:
+    with _debate_metrics_lock:
+        _debate_metrics["total_runs"] += 1
+        _debate_metrics["total_latency_ms"] += latency_ms
+        if winner == "A":
+            _debate_metrics["winner_a"] += 1
+        elif winner == "B":
+            _debate_metrics["winner_b"] += 1
+        _debate_metrics["last_trace_id"] = trace_id
 
 
 def _profile_params(profile: str) -> dict[str, float | int]:
@@ -527,6 +561,117 @@ def rag_compare(
         run_id = run.id
 
     return RagCompareOut(question=payload.question, results=results, run_id=run_id)
+
+
+@app.post("/v1/agents/debate", response_model=AgentDebateOut)
+def run_agent_debate(
+    payload: AgentDebateRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("analyst", "admin")),
+) -> AgentDebateOut:
+    check_rate_limit(request)
+    _ = user
+    started = time.perf_counter()
+
+    trace_id = str(uuid4())
+    drafts, final = run_hierarchical_debate(payload.question, payload.locale)
+
+    steps_out: list[AgentStepOut] = []
+    parent_hash: str | None = None
+    parent_step_id: str | None = None
+    for draft in drafts:
+        step_payload = {
+            "question": payload.question,
+            "agent_name": draft.agent_name,
+            "step_type": draft.step_type,
+            "data": draft.payload,
+        }
+        step_hash = _compute_step_hash(parent_hash, step_payload)
+        step = AgentStep(
+            trace_id=trace_id,
+            parent_step_id=parent_step_id,
+            agent_name=draft.agent_name,
+            step_type=draft.step_type,
+            parent_hash=parent_hash,
+            step_hash=step_hash,
+            payload=step_payload,
+        )
+        db.add(step)
+        db.flush()
+
+        if payload.include_steps:
+            steps_out.append(
+                AgentStepOut(
+                    step_id=step.id,
+                    agent_name=step.agent_name,
+                    step_type=step.step_type,
+                    step_hash=step.step_hash,
+                    parent_hash=step.parent_hash,
+                    payload=step.payload,
+                )
+            )
+        parent_hash = step_hash
+        parent_step_id = step.id
+
+    db.commit()
+    elapsed_ms = (time.perf_counter() - started) * 1000.0
+    _update_debate_metrics(winner=str(final["winner"]), latency_ms=elapsed_ms, trace_id=trace_id)
+    return AgentDebateOut(
+        trace_id=trace_id,
+        answer=final["answer"],
+        winner=final["winner"],
+        score_a=float(final["score_a"]),
+        score_b=float(final["score_b"]),
+        steps=steps_out,
+    )
+
+
+@app.get("/v1/agents/traces/{trace_id}", response_model=AgentTraceOut)
+def get_agent_trace(
+    trace_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("analyst", "admin")),
+) -> AgentTraceOut:
+    check_rate_limit(request)
+    _ = user
+    rows = db.query(AgentStep).filter(AgentStep.trace_id == trace_id).order_by(AgentStep.created_at.asc()).all()
+    if not rows:
+        raise HTTPException(status_code=404, detail="trace not found")
+    return AgentTraceOut(
+        trace_id=trace_id,
+        steps=[
+            AgentStepOut(
+                step_id=row.id,
+                agent_name=row.agent_name,
+                step_type=row.step_type,
+                step_hash=row.step_hash,
+                parent_hash=row.parent_hash,
+                payload=row.payload,
+            )
+            for row in rows
+        ],
+    )
+
+
+@app.get("/v1/agents/metrics", response_model=AgentMetricsOut)
+def get_agent_metrics(
+    request: Request,
+    user: User = Depends(require_roles("analyst", "admin")),
+) -> AgentMetricsOut:
+    check_rate_limit(request)
+    _ = user
+    with _debate_metrics_lock:
+        total_runs = int(_debate_metrics["total_runs"])
+        avg_latency = (float(_debate_metrics["total_latency_ms"]) / total_runs) if total_runs else 0.0
+        return AgentMetricsOut(
+            total_runs=total_runs,
+            winner_a=int(_debate_metrics["winner_a"]),
+            winner_b=int(_debate_metrics["winner_b"]),
+            avg_latency_ms=round(avg_latency, 2),
+            last_trace_id=_debate_metrics["last_trace_id"],
+        )
 
 
 @app.post("/v1/tools/weather", response_model=WeatherOut)

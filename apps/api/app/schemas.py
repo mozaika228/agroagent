@@ -169,3 +169,40 @@ class JobOut(BaseModel):
     result: dict[str, Any]
     error: str | None = None
 
+
+class AgentDebateRequest(BaseModel):
+    question: str
+    locale: str = "ru"
+    include_steps: bool = True
+
+
+class AgentStepOut(BaseModel):
+    step_id: str
+    agent_name: str
+    step_type: str
+    step_hash: str
+    parent_hash: str | None = None
+    payload: dict[str, Any]
+
+
+class AgentDebateOut(BaseModel):
+    trace_id: str
+    answer: str
+    winner: str
+    score_a: float
+    score_b: float
+    steps: list[AgentStepOut] = Field(default_factory=list)
+
+
+class AgentTraceOut(BaseModel):
+    trace_id: str
+    steps: list[AgentStepOut] = Field(default_factory=list)
+
+
+class AgentMetricsOut(BaseModel):
+    total_runs: int
+    winner_a: int
+    winner_b: int
+    avg_latency_ms: float
+    last_trace_id: str | None = None
+

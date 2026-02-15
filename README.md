@@ -15,6 +15,8 @@ AI-agent platform for agriculture in West Kazakhstan.
 - Redis-backed rate limiting (with in-memory fallback)
 - Weather tool (Open-Meteo), NDVI RGB-proxy tool
 - Eval tracking with `run_id`, list, and detail endpoints
+- Hierarchical debate trace endpoint + verifiable hash-chain viewer in web UI
+- Debate observability metrics endpoint (`total_runs`, winner split, average latency)
 - CI with web lint/build + API tests + coverage XML artifact
 
 ## Architecture At a Glance
@@ -85,6 +87,9 @@ curl -X POST http://localhost:8000/v1/rag/compare \
 - `GET /v1/documents/{id}`
 - `POST /v1/rag/query`
 - `POST /v1/rag/compare`
+- `POST /v1/agents/debate`
+- `GET /v1/agents/traces/{trace_id}`
+- `GET /v1/agents/metrics`
 - `POST /v1/tools/weather`
 - `POST /v1/tools/ndvi`
 - `POST /v1/evals/run`
