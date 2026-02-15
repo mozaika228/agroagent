@@ -249,3 +249,25 @@ class SafetyAuditItemOut(BaseModel):
 class SafetyAuditListOut(BaseModel):
     items: list[SafetyAuditItemOut] = Field(default_factory=list)
 
+
+class SafetyEvalRunCreate(BaseModel):
+    dataset_path: str | None = None
+    limit: int | None = None
+    rounds: int = 2
+    save_eval: bool = True
+    model: str = "safety_policy_v1"
+
+
+class SafetyEvalRunOut(BaseModel):
+    run_id: str | None = None
+    dataset: str
+    total: int
+    accuracy: float
+    block_precision: float
+    block_recall: float
+    warn_precision: float
+    warn_recall: float
+    allow_precision: float
+    allow_recall: float
+    mismatches: list[dict[str, Any]] = Field(default_factory=list)
+

@@ -1,5 +1,5 @@
 import { FormEvent } from "react";
-import { CompareResult, DebateMetrics, DebateRun, DebateStep, EvalItem, JobItem, Msg, UploadItem } from "./types";
+import { CompareResult, DebateMetrics, DebateRun, DebateStep, EvalItem, JobItem, Msg, SafetyEvalResult, UploadItem } from "./types";
 
 export function HeroPanel(props: { apiBase: string; role: string | null; sessionId: string | null }) {
   return (
@@ -314,6 +314,42 @@ export function DebatePanel(props: {
           </div>
         ))}
       </div>
+    </section>
+  );
+}
+
+export function SafetyBenchmarkPanel(props: {
+  rounds: number;
+  loading: boolean;
+  canRun: boolean;
+  result: SafetyEvalResult | null;
+  onRoundsChange: (v: number) => void;
+  onRun: () => void;
+}) {
+  return (
+    <section className="panel">
+      <h2>Safety Benchmark</h2>
+      <div className="row">
+        <label>
+          Rounds
+          <input type="number" min={1} max={4} value={props.rounds} onChange={(e) => props.onRoundsChange(Number(e.target.value || 1))} />
+        </label>
+        <button type="button" onClick={props.onRun} disabled={!props.canRun}>
+          {props.loading ? "Running..." : "Run Safety Eval"}
+        </button>
+      </div>
+
+      {props.result && (
+        <div className="compareCard">
+          <p><strong>Dataset:</strong> {props.result.dataset}</p>
+          <p><strong>Run ID:</strong> {props.result.run_id ?? "not saved"}</p>
+          <p><strong>Total:</strong> {props.result.total} | <strong>Accuracy:</strong> {props.result.accuracy.toFixed(3)}</p>
+          <p><strong>Block P/R:</strong> {props.result.block_precision.toFixed(3)} / {props.result.block_recall.toFixed(3)}</p>
+          <p><strong>Warn P/R:</strong> {props.result.warn_precision.toFixed(3)} / {props.result.warn_recall.toFixed(3)}</p>
+          <p><strong>Allow P/R:</strong> {props.result.allow_precision.toFixed(3)} / {props.result.allow_recall.toFixed(3)}</p>
+          <p className="muted">Mismatches: {props.result.mismatches.length}</p>
+        </div>
+      )}
     </section>
   );
 }

@@ -63,3 +63,24 @@ export type DebateMetrics = {
   avg_steps: number;
   last_trace_id?: string | null;
 };
+
+export type SafetyEvalResult = {
+  run_id?: string | null;
+  dataset: string;
+  total: number;
+  accuracy: number;
+  block_precision: number;
+  block_recall: number;
+  warn_precision: number;
+  warn_recall: number;
+  allow_precision: number;
+  allow_recall: number;
+  mismatches: Array<{
+    index: number;
+    locale: string;
+    question: string;
+    expected_action: string;
+    predicted_action: string;
+    rules_triggered: string[];
+  }>;
+};

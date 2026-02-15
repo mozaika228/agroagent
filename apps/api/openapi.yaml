@@ -47,6 +47,9 @@ paths:
   /v1/agents/safety/audit:
     get:
       summary: List safety audit records (policy version, rules, override info)
+  /v1/agents/safety/evals/run:
+    post:
+      summary: Run multilingual safety benchmark and optionally persist metrics to eval_runs
   /metrics:
     get:
       summary: Prometheus metrics endpoint for debate/safety counters

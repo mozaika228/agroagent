@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 
 from app.db import get_db
 from app.main import app
-from app.models import AgentStep, SafetyAuditLog, User
+from app.models import AgentStep, EvalRun, SafetyAuditLog, User
 
 
 def _build_client(tmp_path: Path) -> TestClient:
@@ -23,6 +23,7 @@ def _build_client(tmp_path: Path) -> TestClient:
     User.__table__.create(bind=engine, checkfirst=True)
     AgentStep.__table__.create(bind=engine, checkfirst=True)
     SafetyAuditLog.__table__.create(bind=engine, checkfirst=True)
+    EvalRun.__table__.create(bind=engine, checkfirst=True)
 
     def override_get_db():
         db = TestSessionLocal()
@@ -134,5 +135,29 @@ def test_agent_debate_blocks_hazardous_chemical_prompt(tmp_path: Path):
     audit_resp = client.get("/v1/agents/safety/audit?limit=5", headers={"Authorization": f"Bearer {token}"})
     assert audit_resp.status_code == 200
     assert len(audit_resp.json()["items"]) >= 2
+
+    app.dependency_overrides.clear()
+
+
+def test_safety_eval_endpoint_runs_and_saves(tmp_path: Path):
+    client = _build_client(tmp_path)
+
+    reg = client.post(
+        "/v1/auth/register",
+        json={"email": "debate_eval@example.com", "password": "pass1234", "role": "admin", "locale": "ru"},
+    )
+    assert reg.status_code == 200
+    token = reg.json()["access_token"]
+
+    resp = client.post(
+        "/v1/agents/safety/evals/run",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"rounds": 2, "save_eval": True, "model": "safety_policy_v1"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] > 0
+    assert 0.0 <= data["accuracy"] <= 1.0
+    assert data["run_id"] is not None
 
     app.dependency_overrides.clear()

@@ -2,8 +2,8 @@
 
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 
-import { AuthPanel, ChatPanel, ComparePanel, DebatePanel, DocumentsPanel, EvalsPanel, HeroPanel, JobsPanel } from "./components/panels";
-import { CompareResult, DebateMetrics, DebateRun, DebateStep, EvalItem, JobItem, Msg, Source, UploadItem } from "./components/types";
+import { AuthPanel, ChatPanel, ComparePanel, DebatePanel, DocumentsPanel, EvalsPanel, HeroPanel, JobsPanel, SafetyBenchmarkPanel } from "./components/panels";
+import { CompareResult, DebateMetrics, DebateRun, DebateStep, EvalItem, JobItem, Msg, SafetyEvalResult, Source, UploadItem } from "./components/types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
 
@@ -39,6 +39,9 @@ export default function HomePage() {
   const [debateSteps, setDebateSteps] = useState<DebateStep[]>([]);
   const [debateMetrics, setDebateMetrics] = useState<DebateMetrics | null>(null);
   const [debateLoading, setDebateLoading] = useState(false);
+  const [safetyEvalRounds, setSafetyEvalRounds] = useState(2);
+  const [safetyEvalLoading, setSafetyEvalLoading] = useState(false);
+  const [safetyEvalResult, setSafetyEvalResult] = useState<SafetyEvalResult | null>(null);
 
   const canSend = useMemo(() => text.trim().length > 0 && !sending && !!token, [text, sending, token]);
   const authHeaders = useMemo(() => {
@@ -126,6 +129,7 @@ export default function HomePage() {
     setDebateSafetyOverride(false);
     setDebateOverrideReason("");
     setDebateTraceId("");
+    setSafetyEvalResult(null);
   }
 
   async function ensureSession(): Promise<string> {
@@ -375,6 +379,26 @@ export default function HomePage() {
     }
   }
 
+  async function onRunSafetyEval() {
+    if (!token) return;
+    setError(null);
+    setSafetyEvalLoading(true);
+    try {
+      const response = await fetch(`${API_BASE}/v1/agents/safety/evals/run`, {
+        method: "POST",
+        headers: jsonHeaders(),
+        body: JSON.stringify({ rounds: safetyEvalRounds, save_eval: true, model: "safety_policy_v1" })
+      });
+      if (!response.ok) throw new Error(`safety eval failed (${response.status})`);
+      const data = await response.json();
+      setSafetyEvalResult(data as SafetyEvalResult);
+    } catch (err) {
+      setError(asErr(err));
+    } finally {
+      setSafetyEvalLoading(false);
+    }
+  }
+
   return (
     <main className="layout">
       <HeroPanel apiBase={API_BASE} role={role} sessionId={sessionId} />
@@ -457,6 +481,15 @@ export default function HomePage() {
         onRunDebate={() => onRunDebate().catch((e) => setError(String(e)))}
         onLoadTrace={() => onLoadDebateTrace().catch((e) => setError(String(e)))}
         onLoadMetrics={() => onLoadDebateMetrics().catch((e) => setError(String(e)))}
+      />
+
+      <SafetyBenchmarkPanel
+        rounds={safetyEvalRounds}
+        loading={safetyEvalLoading}
+        canRun={!!token && !safetyEvalLoading}
+        result={safetyEvalResult}
+        onRoundsChange={(v) => setSafetyEvalRounds(Math.max(1, Math.min(4, v || 1)))}
+        onRun={() => onRunSafetyEval().catch((e) => setError(String(e)))}
       />
 
       {error && <section className="panel error">Error: {error}</section>}

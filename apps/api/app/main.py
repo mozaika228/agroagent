@@ -32,6 +32,7 @@ from .rag import (
 )
 from .rate_limit import check_rate_limit
 from .safety import evaluate_agro_policy
+from .safety_eval import load_safety_cases, run_safety_benchmark
 from .schemas import (
     AgentDebateOut,
     AgentMetricsOut,
@@ -61,6 +62,8 @@ from .schemas import (
     RagCompareOut,
     RagQueryCreate,
     RagQueryOut,
+    SafetyEvalRunCreate,
+    SafetyEvalRunOut,
     SafetyInfo,
     SourceItem,
     ToolUsed,
@@ -883,6 +886,59 @@ def list_safety_audit(
             )
             for row in rows
         ]
+    )
+
+
+@app.post("/v1/agents/safety/evals/run", response_model=SafetyEvalRunOut)
+def run_safety_eval(
+    payload: SafetyEvalRunCreate,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("analyst", "admin")),
+) -> SafetyEvalRunOut:
+    check_rate_limit(request)
+    _ = user
+    cases = load_safety_cases(payload.dataset_path, payload.limit)
+    result = run_safety_benchmark(cases, rounds=payload.rounds)
+    dataset_name = payload.dataset_path or "apps/api/data/safety_benchmark_sample.jsonl"
+
+    run_id: str | None = None
+    if payload.save_eval:
+        run = EvalRun(
+            dataset=dataset_name,
+            model=payload.model,
+            status="completed",
+            sample_size=result["total"],
+            metrics={
+                "type": "safety_policy_eval",
+                "rounds": payload.rounds,
+                "accuracy": result["accuracy"],
+                "block_precision": result["block_precision"],
+                "block_recall": result["block_recall"],
+                "warn_precision": result["warn_precision"],
+                "warn_recall": result["warn_recall"],
+                "allow_precision": result["allow_precision"],
+                "allow_recall": result["allow_recall"],
+                "mismatches": result["mismatches"],
+            },
+        )
+        db.add(run)
+        db.commit()
+        db.refresh(run)
+        run_id = run.id
+
+    return SafetyEvalRunOut(
+        run_id=run_id,
+        dataset=dataset_name,
+        total=int(result["total"]),
+        accuracy=float(result["accuracy"]),
+        block_precision=float(result["block_precision"]),
+        block_recall=float(result["block_recall"]),
+        warn_precision=float(result["warn_precision"]),
+        warn_recall=float(result["warn_recall"]),
+        allow_precision=float(result["allow_precision"]),
+        allow_recall=float(result["allow_recall"]),
+        mismatches=[dict(item) for item in result["mismatches"]],
     )
 
 

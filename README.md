@@ -92,6 +92,7 @@ curl -X POST http://localhost:8000/v1/rag/compare \
 - `GET /v1/agents/traces/{trace_id}`
 - `GET /v1/agents/metrics`
 - `GET /v1/agents/safety/audit`
+- `POST /v1/agents/safety/evals/run`
 - `GET /metrics`
 - `POST /v1/tools/weather`
 - `POST /v1/tools/ndvi`
