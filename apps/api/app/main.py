@@ -8,9 +8,10 @@ import json
 import time
 
 import httpx
+import jwt
 import numpy as np
 from PIL import Image
-from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
 from sqlalchemy import text
@@ -22,6 +23,7 @@ from .config import settings
 from .db import SessionLocal, get_db
 from .models import AgentStep, ChatMessage, ChatSession, Document, DocumentChunk, EvalRun, Job, ToolCall, User
 from .models import SafetyAuditLog
+from .llm import get_llm_metrics
 from .rag import (
     VECTOR_DIM,
     bm25_scores,
@@ -30,6 +32,7 @@ from .rag import (
     extract_text_from_file,
     generate_answer_with_context,
 )
+from .rerank import rerank_candidates
 from .rate_limit import check_rate_limit
 from .safety import evaluate_agro_policy
 from .safety_eval import export_safety_report, load_safety_cases, run_safety_benchmark
@@ -87,6 +90,12 @@ _debate_metrics = {
     "total_steps": 0,
     "last_trace_id": None,
 }
+_request_metrics_lock = Lock()
+_request_metrics = {
+    "total_requests": 0,
+    "error_requests": 0,
+    "total_latency_ms": 0.0,
+}
 app = FastAPI(title="AgroAgent API", version="0.3.0")
 
 app.add_middleware(
@@ -113,6 +122,7 @@ async def request_context_middleware(request: Request, call_next):
         elapsed_ms,
         request_id,
     )
+    _update_request_metrics(elapsed_ms, response.status_code)
     return response
 
 
@@ -182,6 +192,20 @@ def _order_steps_by_chain(rows: list[AgentStep]) -> list[AgentStep]:
     return [*ordered, *remaining]
 
 
+def _get_user_from_token(token: str, db: Session) -> User:
+    try:
+        payload = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
+    except jwt.PyJWTError as exc:
+        raise HTTPException(status_code=401, detail="invalid token") from exc
+    user_id = payload.get("sub")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="invalid token payload")
+    user = db.get(User, user_id)
+    if user is None or not user.is_active:
+        raise HTTPException(status_code=401, detail="inactive user")
+    return user
+
+
 def _update_debate_metrics(
     *,
     winner: str,
@@ -208,6 +232,14 @@ def _update_debate_metrics(
         _debate_metrics["last_trace_id"] = trace_id
 
 
+def _update_request_metrics(latency_ms: float, status_code: int) -> None:
+    with _request_metrics_lock:
+        _request_metrics["total_requests"] += 1
+        if status_code >= 400:
+            _request_metrics["error_requests"] += 1
+        _request_metrics["total_latency_ms"] += float(latency_ms)
+
+
 def _render_prometheus_metrics() -> str:
     with _debate_metrics_lock:
         total_runs = int(_debate_metrics["total_runs"])
@@ -218,6 +250,13 @@ def _render_prometheus_metrics() -> str:
         avg_latency = (float(_debate_metrics["total_latency_ms"]) / total_runs) if total_runs else 0.0
         avg_rounds = (float(_debate_metrics["total_rounds"]) / total_runs) if total_runs else 0.0
         avg_steps = (float(_debate_metrics["total_steps"]) / total_runs) if total_runs else 0.0
+    with _request_metrics_lock:
+        total_requests = int(_request_metrics["total_requests"])
+        error_requests = int(_request_metrics["error_requests"])
+        avg_req_latency = (float(_request_metrics["total_latency_ms"]) / total_requests) if total_requests else 0.0
+        success_rate = ((total_requests - error_requests) / total_requests) if total_requests else 0.0
+
+    llm_metrics = get_llm_metrics()
 
     return "\n".join(
         [
@@ -245,6 +284,33 @@ def _render_prometheus_metrics() -> str:
             "# HELP agroagent_debate_avg_steps Average steps per debate.",
             "# TYPE agroagent_debate_avg_steps gauge",
             f"agroagent_debate_avg_steps {avg_steps:.2f}",
+            "# HELP agroagent_http_total_requests Total HTTP requests.",
+            "# TYPE agroagent_http_total_requests counter",
+            f"agroagent_http_total_requests {total_requests}",
+            "# HELP agroagent_http_error_requests Total HTTP requests with status >= 400.",
+            "# TYPE agroagent_http_error_requests counter",
+            f"agroagent_http_error_requests {error_requests}",
+            "# HELP agroagent_http_avg_latency_ms Average request latency in ms.",
+            "# TYPE agroagent_http_avg_latency_ms gauge",
+            f"agroagent_http_avg_latency_ms {avg_req_latency:.2f}",
+            "# HELP agroagent_http_success_rate Request success rate (0-1).",
+            "# TYPE agroagent_http_success_rate gauge",
+            f"agroagent_http_success_rate {success_rate:.4f}",
+            "# HELP agroagent_llm_total_requests Total LLM requests.",
+            "# TYPE agroagent_llm_total_requests counter",
+            f"agroagent_llm_total_requests {llm_metrics['total_requests']}",
+            "# HELP agroagent_llm_failed_requests Total failed LLM requests.",
+            "# TYPE agroagent_llm_failed_requests counter",
+            f"agroagent_llm_failed_requests {llm_metrics['failed_requests']}",
+            "# HELP agroagent_llm_prompt_tokens Total prompt tokens (estimated).",
+            "# TYPE agroagent_llm_prompt_tokens counter",
+            f"agroagent_llm_prompt_tokens {llm_metrics['prompt_tokens']}",
+            "# HELP agroagent_llm_completion_tokens Total completion tokens (estimated).",
+            "# TYPE agroagent_llm_completion_tokens counter",
+            f"agroagent_llm_completion_tokens {llm_metrics['completion_tokens']}",
+            "# HELP agroagent_llm_avg_latency_ms Average LLM latency in ms.",
+            "# TYPE agroagent_llm_avg_latency_ms gauge",
+            f"agroagent_llm_avg_latency_ms {llm_metrics['avg_latency_ms']:.2f}",
             "",
         ]
     )
@@ -335,6 +401,14 @@ def _retrieve_chunks(db: Session, question: str, top_k: int = 5, profile: str = 
         )
 
     ranked = sorted(candidates.values(), key=lambda x: x["score"], reverse=True)
+    if settings.reranker_enabled:
+        ranked = rerank_candidates(
+            query=question,
+            candidates=ranked,
+            model_name=settings.reranker_model,
+            batch_size=settings.reranker_batch_size,
+            top_k=min(settings.reranker_top_k, len(ranked)),
+        )
     return ranked[:k]
 
 
@@ -795,6 +869,169 @@ def run_agent_debate(
         ),
         steps=steps_out,
     )
+
+
+@app.websocket("/v1/ws/agents/debate")
+async def ws_agent_debate(websocket: WebSocket) -> None:
+    await websocket.accept()
+    try:
+        payload_raw = await websocket.receive_json()
+    except Exception as exc:  # noqa: BLE001
+        await websocket.send_json({"type": "error", "message": f"invalid payload: {exc}"})
+        await websocket.close()
+        return
+
+    token = websocket.query_params.get("token") or payload_raw.get("token")
+    if not token:
+        await websocket.send_json({"type": "error", "message": "missing token"})
+        await websocket.close()
+        return
+
+    db = SessionLocal()
+    try:
+        user = _get_user_from_token(token, db)
+        if user.role not in {"analyst", "admin"}:
+            await websocket.send_json({"type": "error", "message": "forbidden"})
+            await websocket.close()
+            return
+
+        payload = AgentDebateRequest(
+            question=str(payload_raw.get("question", "")),
+            locale=str(payload_raw.get("locale", "ru")),
+            include_steps=bool(payload_raw.get("include_steps", True)),
+            rounds=int(payload_raw.get("rounds", 2)),
+            safety_override=bool(payload_raw.get("safety_override", False)),
+            override_reason=payload_raw.get("override_reason"),
+        )
+
+        if payload.safety_override and (not payload.override_reason or len(payload.override_reason.strip()) < 8):
+            await websocket.send_json({"type": "error", "message": "override_reason must be at least 8 chars"})
+            await websocket.close()
+            return
+
+        started = time.perf_counter()
+        trace_id = str(uuid4())
+        drafts, final = run_hierarchical_debate(payload.question, payload.locale, payload.rounds)
+        safety = evaluate_agro_policy(payload.question, final["answer"], payload.locale)
+        overridden = payload.safety_override and safety.action == "block"
+        effective_action = "warn" if overridden else safety.action
+        final_answer = (
+            final["answer"] if overridden else (safety.safe_alternative if safety.action == "block" else final["answer"])
+        )
+        policy_draft = AgentStepDraft(
+            agent_name="safety-policy-agent",
+            step_type="safety_policy",
+            payload={
+                "policy_version": safety.policy_version,
+                "original_action": safety.action,
+                "effective_action": effective_action,
+                "overridden": overridden,
+                "override_reason": payload.override_reason,
+                "level": safety.level,
+                "reasons": safety.reasons,
+                "rules_triggered": safety.rules_triggered,
+                "original_answer": final["answer"],
+                "final_answer": final_answer,
+            },
+        )
+        all_drafts = [*drafts, policy_draft]
+
+        steps_out: list[AgentStepOut] = []
+        step_hashes: list[str] = []
+        parent_hash: str | None = None
+        parent_step_id: str | None = None
+        for draft in all_drafts:
+            step_payload = {
+                "question": payload.question,
+                "agent_name": draft.agent_name,
+                "step_type": draft.step_type,
+                "data": draft.payload,
+            }
+            step_hash = _compute_step_hash(parent_hash, step_payload)
+            step = AgentStep(
+                trace_id=trace_id,
+                parent_step_id=parent_step_id,
+                agent_name=draft.agent_name,
+                step_type=draft.step_type,
+                parent_hash=parent_hash,
+                step_hash=step_hash,
+                payload=step_payload,
+            )
+            db.add(step)
+            db.flush()
+            step_hashes.append(step_hash)
+
+            step_out = AgentStepOut(
+                step_id=step.id,
+                agent_name=step.agent_name,
+                step_type=step.step_type,
+                step_hash=step.step_hash,
+                parent_hash=step.parent_hash,
+                payload=step.payload,
+            )
+            steps_out.append(step_out)
+            if payload.include_steps:
+                await websocket.send_json({"type": "step", "data": step_out.model_dump()})
+
+            parent_hash = step_hash
+            parent_step_id = step.id
+
+        db.add(
+            SafetyAuditLog(
+                trace_id=trace_id,
+                policy_version=safety.policy_version,
+                original_action=safety.action,
+                effective_action=effective_action,
+                overridden=overridden,
+                override_reason=payload.override_reason.strip() if payload.override_reason else None,
+                safety_level=safety.level,
+                rules_triggered={"items": safety.rules_triggered},
+                reasons={"items": safety.reasons},
+                question=payload.question,
+                recommendation=final_answer,
+            )
+        )
+        db.commit()
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+        trace_digest = _compute_trace_digest(step_hashes)
+        _update_debate_metrics(
+            winner=str(final["winner"]),
+            latency_ms=elapsed_ms,
+            trace_id=trace_id,
+            rounds=int(final["rounds"]),
+            step_count=len(step_hashes),
+            blocked=effective_action == "block",
+            overridden=overridden,
+        )
+
+        response = AgentDebateOut(
+            trace_id=trace_id,
+            trace_digest=trace_digest,
+            answer=final_answer,
+            winner=final["winner"],
+            score_a=float(final["score_a"]),
+            score_b=float(final["score_b"]),
+            rounds=int(final["rounds"]),
+            spawned_agents=[str(item) for item in final["spawned_agents"]],
+            safety=AgentSafetyOut(
+                policy_version=safety.policy_version,
+                level=safety.level,
+                original_action=safety.action,
+                effective_action=effective_action,
+                overridden=overridden,
+                override_reason=payload.override_reason.strip() if payload.override_reason else None,
+                reasons=safety.reasons,
+                rules_triggered=safety.rules_triggered,
+            ),
+            steps=steps_out if payload.include_steps else [],
+        )
+        await websocket.send_json({"type": "final", "data": response.model_dump()})
+    except WebSocketDisconnect:
+        return
+    except Exception as exc:  # noqa: BLE001
+        await websocket.send_json({"type": "error", "message": str(exc)})
+    finally:
+        db.close()
 
 
 @app.get("/v1/agents/traces/{trace_id}", response_model=AgentTraceOut)

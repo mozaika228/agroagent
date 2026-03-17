@@ -39,6 +39,8 @@ export default function HomePage() {
   const [debateSteps, setDebateSteps] = useState<DebateStep[]>([]);
   const [debateMetrics, setDebateMetrics] = useState<DebateMetrics | null>(null);
   const [debateLoading, setDebateLoading] = useState(false);
+  const [debateStreaming, setDebateStreaming] = useState(false);
+  const [debateStreamError, setDebateStreamError] = useState<string | null>(null);
   const [safetyEvalRounds, setSafetyEvalRounds] = useState(2);
   const [safetyEvalExportReport, setSafetyEvalExportReport] = useState(true);
   const [safetyEvalLoading, setSafetyEvalLoading] = useState(false);
@@ -130,6 +132,8 @@ export default function HomePage() {
     setDebateSafetyOverride(false);
     setDebateOverrideReason("");
     setDebateTraceId("");
+    setDebateStreaming(false);
+    setDebateStreamError(null);
     setSafetyEvalResult(null);
   }
 
@@ -328,6 +332,82 @@ export default function HomePage() {
     if (!debateQuestion.trim() || !token) return;
     setError(null);
     setDebateLoading(true);
+    setDebateStreamError(null);
+    setDebateRun(null);
+    setDebateSteps([]);
+
+    const wsBase = API_BASE.startsWith("https")
+      ? API_BASE.replace("https", "wss")
+      : API_BASE.replace("http", "ws");
+
+    const runStream = () =>
+      new Promise<boolean>((resolve) => {
+        const ws = new WebSocket(`${wsBase}/v1/ws/agents/debate?token=${encodeURIComponent(token)}`);
+        let resolved = false;
+        ws.onopen = () => {
+          setDebateStreaming(true);
+          ws.send(
+            JSON.stringify({
+              question: debateQuestion.trim(),
+              locale: "ru",
+              include_steps: true,
+              rounds: debateRounds,
+              safety_override: debateSafetyOverride,
+              override_reason: debateSafetyOverride ? debateOverrideReason : null
+            })
+          );
+        };
+        ws.onmessage = (event) => {
+          try {
+            const msg = JSON.parse(event.data as string);
+            if (msg.type === "step") {
+              setDebateSteps((prev) => [...prev, msg.data as DebateStep]);
+            }
+            if (msg.type === "final") {
+              const run = msg.data as DebateRun;
+              setDebateRun(run);
+              setDebateTraceId(run.trace_id);
+              setDebateSteps(run.steps ?? []);
+              setDebateStreaming(false);
+              setDebateLoading(false);
+              if (!resolved) {
+                resolved = true;
+                resolve(true);
+              }
+              ws.close();
+            }
+            if (msg.type === "error") {
+              setDebateStreamError(String(msg.message ?? "stream error"));
+              setDebateStreaming(false);
+              setDebateLoading(false);
+              if (!resolved) {
+                resolved = true;
+                resolve(false);
+              }
+              ws.close();
+            }
+          } catch (parseErr) {
+            setDebateStreamError(String(parseErr));
+          }
+        };
+        ws.onerror = () => {
+          setDebateStreamError("websocket failed");
+          setDebateStreaming(false);
+          setDebateLoading(false);
+          if (!resolved) {
+            resolved = true;
+            resolve(false);
+          }
+        };
+        ws.onclose = () => {
+          setDebateStreaming(false);
+          setDebateLoading(false);
+        };
+      });
+
+    const streamOk = await runStream();
+    if (streamOk) return;
+
     try {
       const response = await fetch(`${API_BASE}/v1/agents/debate`, {
         method: "POST",
@@ -472,6 +552,8 @@ export default function HomePage() {
         traceSteps={debateSteps}
         metrics={debateMetrics}
         loading={debateLoading}
+        streaming={debateStreaming}
+        streamError={debateStreamError}
         canRun={
           !!token &&
           !debateLoading &&

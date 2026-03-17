@@ -3,7 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
-from typing import Any
+from typing import Any, TypedDict
+
+from langgraph.graph import END, StateGraph
+
+from ..config import settings
+from ..llm import ollama_chat
 
 
 @dataclass
@@ -13,6 +18,15 @@ class AgentStepDraft:
     payload: dict[str, Any]
 
 
+class LangGraphState(TypedDict, total=False):
+    question: str
+    locale: str
+    rounds: int
+    spawned_agents: list[str]
+    steps: list[AgentStepDraft]
+    final: dict[str, Any]
+
+
 def _hash_json(payload: dict[str, Any]) -> str:
     raw = json.dumps(payload, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
@@ -20,74 +34,99 @@ def _hash_json(payload: dict[str, Any]) -> str:
 
 def _spawn_agents(question: str) -> list[str]:
     q = question.lower()
-    spawned = ["weather-agent", "soil-agent", "crop-agent"]
+    spawned = ["planner-agent", "ndvi-researcher", "weather-tool-agent", "critic-agent"]
     if any(token in q for token in ["drought", "dry", "irrigation", "water", "засух", "полив"]):
         spawned.append("irrigation-agent")
     if any(token in q for token in ["pest", "disease", "fung", "вред", "болезн"]):
         spawned.append("pest-agent")
-    if any(token in q for token in ["cattle", "livestock", "cow", "sheep", "скот", "животн"]):
-        spawned.append("livestock-agent")
     return spawned
 
 
-def run_hierarchical_debate(question: str, locale: str = "ru", rounds: int = 2) -> tuple[list[AgentStepDraft], dict[str, Any]]:
-    rounds = max(1, min(rounds, 4))
-    spawned_agents = _spawn_agents(question)
-
-    # Root plan with dynamic spawn list.
-    root = AgentStepDraft(
-        agent_name="root-agent",
-        step_type="plan",
-        payload={
-            "goal": "generate drought-aware agronomic recommendation",
-            "locale": locale,
-            "question": question,
-            "spawned": spawned_agents,
-            "rounds": rounds,
-        },
+def _llm_or_fallback(system: str, user: str, fallback: str) -> str:
+    if not settings.langgraph_use_llm:
+        return fallback
+    content = ollama_chat(
+        base_url=settings.ollama_url,
+        model=settings.ollama_chat_model,
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        timeout=30.0,
     )
+    return content.strip() or fallback
 
-    analyses: list[AgentStepDraft] = []
-    tool_evidence: list[AgentStepDraft] = []
-    for agent_name in spawned_agents:
-        if agent_name == "weather-agent":
-            tool_input = {"lat": 51.23, "lon": 51.37, "window_days": 14}
-            tool_output = {"drought_risk": "medium", "rain_forecast_14d_mm": 18, "temperature_trend": "above_normal"}
-        elif agent_name == "soil-agent":
-            tool_input = {"region": "WKO", "depth_cm": [0, 20]}
-            tool_output = {"soil_moisture_status": "low", "topsoil_condition": "dry", "irrigation_readiness": "required"}
-        elif agent_name == "crop-agent":
-            tool_input = {"crop": "spring wheat", "stage_source": "field_log"}
-            tool_output = {"growth_stage": "early", "stress_signal": "moderate", "yield_risk": "medium"}
-        elif agent_name == "irrigation-agent":
-            tool_input = {"canal_access": True, "pump_capacity_m3h": 42}
-            tool_output = {"window_days": 5, "target_mm": 12, "priority": "high"}
-        elif agent_name == "pest-agent":
-            tool_input = {"last_scouting_days": 4, "humidity_flag": True}
-            tool_output = {"disease_risk": "low", "pest_pressure": "medium", "spray_now": False}
-        else:
-            tool_input = {"species": "mixed", "head_count": 120}
-            tool_output = {"heat_stress_risk": "medium", "water_need_lpd": 55, "action": "increase watering points"}
 
-        io_hash = _hash_json({"input": tool_input, "output": tool_output})
-        tool_evidence.append(
-            AgentStepDraft(
-                agent_name=agent_name,
-                step_type="tool_evidence",
-                payload={"tool_input": tool_input, "tool_output": tool_output, "io_hash": io_hash},
-            )
-        )
-        analyses.append(
-            AgentStepDraft(
-                agent_name=agent_name,
-                step_type="analysis",
-                payload={**tool_output, "evidence_hash": io_hash},
-            )
-        )
+def _planner_node(state: LangGraphState) -> LangGraphState:
+    question = state["question"]
+    spawned = _spawn_agents(question)
+    plan = _llm_or_fallback(
+        "You are the planner agent for an agricultural AI system.",
+        f"Create a concise plan and which agents to invoke for: {question}",
+        "Plan: gather NDVI signals, check short-term weather, and validate recommendations via critic.",
+    )
+    step = AgentStepDraft(
+        agent_name="planner-agent",
+        step_type="plan",
+        payload={"goal": "structured agronomy recommendation", "plan": plan, "spawned": spawned},
+    )
+    return {"spawned_agents": spawned, "steps": [step]}
 
+
+def _ndvi_node(state: LangGraphState) -> LangGraphState:
+    question = state["question"]
+    locale = state["locale"]
+    note = _llm_or_fallback(
+        "You are an NDVI researcher for crop health signals.",
+        f"Summarize NDVI considerations for: {question}. Locale={locale}.",
+        "NDVI proxy: watch for low vegetation vigor; prioritize fields with NDVI < 0.3 for scouting.",
+    )
+    step = AgentStepDraft(agent_name="ndvi-researcher", step_type="analysis", payload={"ndvi_note": note})
+    return {"steps": [*state.get("steps", []), step]}
+
+
+def _weather_node(state: LangGraphState) -> LangGraphState:
+    question = state["question"]
+    note = _llm_or_fallback(
+        "You are a weather tool agent. Provide a short risk summary without inventing data.",
+        f"Give a generic weather risk summary for: {question}.",
+        "Weather risk: monitor 10-14 day precipitation deficits and heat spikes above 30C.",
+    )
+    tool_input = {"lat": 51.23, "lon": 51.37, "window_days": 14}
+    tool_output = {"drought_risk": "medium", "rain_forecast_14d_mm": 18, "temperature_trend": "above_normal"}
+    io_hash = _hash_json({"input": tool_input, "output": tool_output})
+    steps = [
+        *state.get("steps", []),
+        AgentStepDraft(
+            agent_name="weather-tool-agent",
+            step_type="tool_evidence",
+            payload={"tool_input": tool_input, "tool_output": tool_output, "io_hash": io_hash},
+        ),
+        AgentStepDraft(
+            agent_name="weather-tool-agent",
+            step_type="analysis",
+            payload={"summary": note, "evidence_hash": io_hash},
+        ),
+    ]
+    return {"steps": steps}
+
+
+def _critic_node(state: LangGraphState) -> LangGraphState:
+    question = state["question"]
+    critique = _llm_or_fallback(
+        "You are a critic agent. Flag risky agronomic guidance and hallucinations.",
+        f"Critique candidate advice for: {question}.",
+        "Critic: avoid recommending hazardous chemicals without local compliance checks.",
+    )
+    step = AgentStepDraft(agent_name="critic-agent", step_type="critique", payload={"note": critique})
+    return {"steps": [*state.get("steps", []), step]}
+
+
+def _build_debate(state: LangGraphState) -> LangGraphState:
+    rounds = max(1, min(int(state.get("rounds", 2)), 4))
+    debate_rounds: list[AgentStepDraft] = []
     score_a = 0.0
     score_b = 0.0
-    debate_rounds: list[AgentStepDraft] = []
     for round_idx in range(1, rounds + 1):
         safety_a = min(0.97, 0.86 + (0.02 * round_idx))
         evidence_a = min(0.92, 0.74 + (0.03 * round_idx))
@@ -139,7 +178,6 @@ def run_hierarchical_debate(question: str, locale: str = "ru", rounds: int = 2) 
         )
         debate_rounds.extend([proposal_a, proposal_b, critique])
 
-    # Verifier decides winner by weighted rubric.
     winner = "A" if score_a >= score_b else "B"
     winning_text = (
         "Deficit irrigation + delayed nitrogen top-dressing + moisture-first scheduling."
@@ -161,13 +199,54 @@ def run_hierarchical_debate(question: str, locale: str = "ru", rounds: int = 2) 
         },
     )
 
-    steps = [root, *tool_evidence, *analyses, *debate_rounds, verifier]
+    steps = [*state.get("steps", []), *debate_rounds, verifier]
     final = {
         "answer": verifier.payload["final_recommendation"],
         "winner": winner,
         "score_a": verifier.payload["score_a"],
         "score_b": verifier.payload["score_b"],
         "rounds": rounds,
-        "spawned_agents": spawned_agents,
+        "spawned_agents": state.get("spawned_agents", []),
     }
+    return {"steps": steps, "final": final}
+
+
+def _build_graph() -> StateGraph:
+    graph = StateGraph(LangGraphState)
+    graph.add_node("planner", _planner_node)
+    graph.add_node("ndvi", _ndvi_node)
+    graph.add_node("weather", _weather_node)
+    graph.add_node("critic", _critic_node)
+    graph.add_node("debate", _build_debate)
+
+    graph.set_entry_point("planner")
+    graph.add_edge("planner", "ndvi")
+    graph.add_edge("ndvi", "weather")
+    graph.add_edge("weather", "critic")
+    graph.add_edge("critic", "debate")
+    graph.add_edge("debate", END)
+    return graph
+
+
+_GRAPH = _build_graph().compile()
+
+
+def run_hierarchical_debate(question: str, locale: str = "ru", rounds: int = 2) -> tuple[list[AgentStepDraft], dict[str, Any]]:
+    state: LangGraphState = {
+        "question": question,
+        "locale": locale,
+        "rounds": rounds,
+    }
+    result = _GRAPH.invoke(state)
+    steps = result.get("steps", [])
+    final = result.get("final", {})
+    if not final:
+        final = {
+            "answer": "No recommendation generated.",
+            "winner": "A",
+            "score_a": 0.0,
+            "score_b": 0.0,
+            "rounds": rounds,
+            "spawned_agents": result.get("spawned_agents", []),
+        }
     return steps, final

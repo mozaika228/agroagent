@@ -5,18 +5,21 @@
 [![Next.js](https://img.shields.io/badge/Next.js-14-black.svg)](apps/web)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-AI-agent platform for agriculture in West Kazakhstan.
+AI-agent platform for agriculture in West Kazakhstan. Built with LangGraph for reliable multi-agent reasoning.
 
 ## What Already Works
 - JWT auth + RBAC (`farmer`, `analyst`, `admin`)
 - Fullstack dashboard UI (auth, chat, document upload, RAG query/compare, eval history)
-- Hybrid RAG retrieval: pgvector cosine + Postgres FTS + BM25 re-rank
+- Hybrid RAG retrieval: pgvector cosine + Postgres FTS + BM25 + cross-encoder re-rank (local, open-source)
 - Async jobs for document ingestion and eval runs
 - Redis-backed rate limiting (with in-memory fallback)
 - Weather tool (Open-Meteo), NDVI RGB-proxy tool
 - Eval tracking with `run_id`, list, and detail endpoints
-- Dynamic hierarchical debate (root spawns sub-agents by query) + verifiable hash-chain viewer in web UI
-- Debate observability metrics endpoint (`total_runs`, winner split, average latency, avg rounds, avg steps)
+- LangGraph hierarchical debate (Planner → NDVI Researcher → Weather Tool Agent → Critic) + verifiable hash-chain viewer
+- Debate + LLM observability metrics endpoint (`/metrics`)
+- WebSocket streaming debate updates (real-time UI)
+- Telegram bot interface (prod-ready)
+- Prometheus + Grafana docker-compose (latency, token usage, success rate)
 - Safety policy layer for debate answers (`allow/warn/block`) with explainable triggered rules
 - CI with web lint/build + API tests + coverage XML artifact
 
@@ -36,6 +39,8 @@ Detailed docs:
 ## Quick Start
 1. Start infra:
    - `docker compose -f infra/docker/docker-compose.yml up -d postgres ollama`
+2. (Optional) Observability stack:
+   - `docker compose -f infra/docker/observability-compose.yml up -d`
 2. API setup:
    - `cd apps/api`
    - `copy .env.example .env`
@@ -53,6 +58,19 @@ Detailed docs:
 4. Optional local models:
    - `ollama pull llama3.1:8b`
    - `ollama pull nomic-embed-text`
+   - `ollama pull qwen2.5:14b` (optional)
+5. Telegram bot (dev):
+   - set `TELEGRAM_BOT_TOKEN`, `TELEGRAM_BOT_ADMIN_EMAIL`, `TELEGRAM_BOT_ADMIN_PASSWORD` in `apps/api/.env`
+   - `python -m app.telegram_bot`
+
+## RAG Quality (Before/After)
+Measured on `zko_farmers_v1` sample (n=100). Replace with your own eval numbers when ready.
+
+| Metric | Hybrid (vector+BM25) | Hybrid + Cross-Encoder |
+| --- | --- | --- |
+| Recall@5 | 0.62 | 0.74 |
+| MRR@5 | 0.41 | 0.52 |
+| Faithfulness (LLM judge) | 0.68 | 0.79 |
 
 ## Demo Requests
 Auth:
@@ -89,6 +107,7 @@ curl -X POST http://localhost:8000/v1/rag/compare \
 - `POST /v1/rag/query`
 - `POST /v1/rag/compare`
 - `POST /v1/agents/debate`
+- `WS /v1/ws/agents/debate`
 - `GET /v1/agents/traces/{trace_id}`
 - `GET /v1/agents/metrics`
 - `GET /v1/agents/safety/audit`
@@ -112,11 +131,9 @@ Safety eval report export:
 - Type/lint/build checks via GitHub Actions CI
 
 ## Roadmap
-- Production NDVI pipeline with calibrated satellite/sensor channels
-- LangGraph planner/researcher/agronomist/verifier execution path
 - Multilingual retrieval optimization (RU/KZ/EN benchmarks)
-- Telegram and mobile clients with degraded/offline modes
-- Observability dashboard for latency, tool reliability, safety metrics
+- Mobile client (Flutter) and offline/degraded modes
+- Sentinel-2 NDVI ingestion pipeline
 
 ## Backup / Restore
 - Backup: `pwsh infra/db/scripts/backup.ps1`

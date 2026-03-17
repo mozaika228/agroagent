@@ -5,6 +5,8 @@ from pathlib import Path
 
 import httpx
 
+from .llm import ollama_chat
+
 VECTOR_DIM = 768
 
 
@@ -114,27 +116,17 @@ def generate_answer_with_context(
     )
     user_prompt = f"Question: {question}\n\nContext:\n{context_text}"
 
-    try:
-        with httpx.Client(timeout=timeout) as client:
-            resp = client.post(
-                f"{base_url.rstrip('/')}/api/chat",
-                json={
-                    "model": model,
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                    "stream": False,
-                },
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            msg = data.get("message", {})
-            content = msg.get("content")
-            if content:
-                return str(content)
-    except httpx.HTTPError:
-        pass
+    content = ollama_chat(
+        base_url=base_url,
+        model=model,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        timeout=timeout,
+    )
+    if content:
+        return content
 
     # Deterministic fallback without LLM.
     snippets = "\n".join([f"- {c['chunk_text'][:220]}..." for c in context_blocks[:3]])

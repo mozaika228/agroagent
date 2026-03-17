@@ -212,6 +212,8 @@ export function DebatePanel(props: {
   traceSteps: DebateStep[];
   metrics: DebateMetrics | null;
   loading: boolean;
+  streaming: boolean;
+  streamError: string | null;
   canRun: boolean;
   canQuery: boolean;
   onQuestionChange: (v: string) => void;
@@ -266,6 +268,8 @@ export function DebatePanel(props: {
             Load Metrics
           </button>
         </div>
+        {props.streaming && <p className="muted">Streaming steps...</p>}
+        {props.streamError && <p className="muted">Stream error: {props.streamError}</p>}
       </div>
 
       {props.run && (
