@@ -188,3 +188,56 @@ class FieldFeatureSnapshot(Base):
     features_json: Mapped[dict] = mapped_column("features", JSONType, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
+
+class AgentRun(Base):
+    __tablename__ = "agent_runs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=gen_id)
+    created_by: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False, index=True)
+    question: Mapped[str] = mapped_column(Text, nullable=False)
+    locale: Mapped[str] = mapped_column(String(8), default="ru")
+    status: Mapped[str] = mapped_column(String(20), default="queued", index=True)
+    trace_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    trace_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    final_answer: Mapped[str | None] = mapped_column(Text, nullable=True)
+    winner: Mapped[str | None] = mapped_column(String(1), nullable=True)
+    score_a: Mapped[float | None] = mapped_column(Float, nullable=True)
+    score_b: Mapped[float | None] = mapped_column(Float, nullable=True)
+    rounds: Mapped[int] = mapped_column(Integer, default=2)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    metadata_json: Mapped[dict] = mapped_column("metadata", JSONType, default=dict)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AgentTask(Base):
+    __tablename__ = "agent_tasks"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=gen_id)
+    run_id: Mapped[str] = mapped_column(String(36), ForeignKey("agent_runs.id", ondelete="CASCADE"), nullable=False, index=True)
+    task_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="queued", index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, default=1)
+    latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    payload_json: Mapped[dict] = mapped_column("payload", JSONType, default=dict)
+    result_json: Mapped[dict] = mapped_column("result", JSONType, default=dict)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ToolReliabilitySnapshot(Base):
+    __tablename__ = "tool_reliability_snapshots"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=gen_id)
+    tool_name: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    success_rate: Mapped[float] = mapped_column(Float, nullable=False)
+    avg_latency_ms: Mapped[float] = mapped_column(Float, nullable=False)
+    sample_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    reliability_score: Mapped[float] = mapped_column(Float, nullable=False)
+    details_json: Mapped[dict] = mapped_column("details", JSONType, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+

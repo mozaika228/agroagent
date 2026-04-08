@@ -16,6 +16,7 @@ AI-agent platform for agriculture in West Kazakhstan. Built with LangGraph for r
 - Weather tool (Open-Meteo), NDVI RGB-proxy tool
 - Eval tracking with `run_id`, list, and detail endpoints
 - LangGraph hierarchical debate (Planner → NDVI Researcher → Weather Tool Agent → Critic) + verifiable hash-chain viewer
+- Research/production runtime: `agent_runs` + `agent_tasks` with retries/timeouts and execution states
 - Debate + LLM observability metrics endpoint (`/metrics`)
 - WebSocket streaming debate updates (real-time UI)
 - Telegram bot interface (prod-ready)
@@ -114,6 +115,11 @@ curl -X POST http://localhost:8000/v1/rag/compare \
 - `POST /v1/rag/query`
 - `POST /v1/rag/compare`
 - `POST /v1/agents/debate`
+- `POST /v1/agents/runs`
+- `GET /v1/agents/runs`
+- `GET /v1/agents/runs/{run_id}`
+- `GET /v1/agents/runs/{run_id}/tasks`
+- `GET /v1/agents/reliability`
 - `WS /v1/ws/agents/debate`
 - `GET /v1/agents/traces/{trace_id}`
 - `GET /v1/agents/metrics`

@@ -22,7 +22,9 @@ from .agents.pipeline import AgentStepDraft, run_hierarchical_debate
 from .config import settings
 from .db import SessionLocal, get_db
 from .models import (
+    AgentRun,
     AgentStep,
+    AgentTask,
     ChatMessage,
     ChatSession,
     Document,
@@ -33,6 +35,7 @@ from .models import (
     FieldObservation,
     Job,
     ToolCall,
+    ToolReliabilitySnapshot,
     User,
 )
 from .models import SafetyAuditLog
@@ -53,8 +56,11 @@ from .schemas import (
     AgentDebateOut,
     AgentMetricsOut,
     AgentDebateRequest,
+    AgentRunDetailOut,
+    AgentRunOut,
     AgentSafetyOut,
     AgentStepOut,
+    AgentTaskOut,
     AgentTraceOut,
     SafetyAuditItemOut,
     SafetyAuditListOut,
@@ -88,6 +94,7 @@ from .schemas import (
     SafetyEvalRunOut,
     SafetyInfo,
     SourceItem,
+    ToolReliabilityOut,
     ToolUsed,
     WeatherOut,
     WeatherRequest,
@@ -223,6 +230,335 @@ def _get_user_from_token(token: str, db: Session) -> User:
     if user is None or not user.is_active:
         raise HTTPException(status_code=401, detail="inactive user")
     return user
+
+
+def _to_agent_run_out(run: AgentRun) -> AgentRunOut:
+    return AgentRunOut(
+        run_id=run.id,
+        created_by=run.created_by,
+        question=run.question,
+        locale=run.locale,
+        status=run.status,
+        trace_id=run.trace_id,
+        trace_digest=run.trace_digest,
+        final_answer=run.final_answer,
+        winner=run.winner,
+        score_a=run.score_a,
+        score_b=run.score_b,
+        rounds=run.rounds,
+        error=run.error,
+        metadata=run.metadata_json or {},
+        started_at=run.started_at,
+        finished_at=run.finished_at,
+        created_at=run.created_at,
+    )
+
+
+def _to_agent_task_out(task: AgentTask) -> AgentTaskOut:
+    return AgentTaskOut(
+        task_id=task.id,
+        run_id=task.run_id,
+        task_name=task.task_name,
+        status=task.status,
+        attempts=task.attempts,
+        max_attempts=task.max_attempts,
+        latency_ms=task.latency_ms,
+        error=task.error,
+        payload=task.payload_json or {},
+        result=task.result_json or {},
+        started_at=task.started_at,
+        finished_at=task.finished_at,
+        created_at=task.created_at,
+    )
+
+
+def _capture_tool_reliability(db: Session, tool_name: str, sample_limit: int = 120) -> ToolReliabilitySnapshot:
+    rows = (
+        db.query(ToolCall)
+        .filter(ToolCall.tool_name == tool_name)
+        .order_by(ToolCall.created_at.desc())
+        .limit(max(1, sample_limit))
+        .all()
+    )
+    sample_size = len(rows)
+    if sample_size == 0:
+        success_rate = 0.0
+        avg_latency_ms = 0.0
+    else:
+        success_rate = sum(1 for row in rows if row.status == "ok") / sample_size
+        lat_values = [float(row.latency_ms) for row in rows if row.latency_ms is not None]
+        avg_latency_ms = (sum(lat_values) / len(lat_values)) if lat_values else 0.0
+
+    latency_component = max(0.0, 1.0 - min(1.0, (avg_latency_ms / 2000.0)))
+    reliability_score = round((0.75 * success_rate) + (0.25 * latency_component), 4)
+    snapshot = ToolReliabilitySnapshot(
+        tool_name=tool_name,
+        success_rate=round(success_rate, 4),
+        avg_latency_ms=round(avg_latency_ms, 2),
+        sample_size=sample_size,
+        reliability_score=reliability_score,
+        details_json={"formula": "0.75*success_rate + 0.25*(1-min(1,avg_latency_ms/2000))"},
+    )
+    db.add(snapshot)
+    db.flush()
+    return snapshot
+
+
+def _execute_task_with_retries(
+    *,
+    db: Session,
+    run: AgentRun,
+    task_name: str,
+    payload: dict,
+    max_attempts: int,
+    timeout_sec: int,
+    fn,
+):
+    task = AgentTask(
+        run_id=run.id,
+        task_name=task_name,
+        status="queued",
+        attempts=0,
+        max_attempts=max_attempts,
+        payload_json=payload,
+    )
+    db.add(task)
+    db.flush()
+
+    last_error: str | None = None
+    for attempt in range(1, max_attempts + 1):
+        started = time.perf_counter()
+        task.status = "running"
+        task.started_at = datetime.now(timezone.utc)
+        task.attempts = attempt
+        db.flush()
+        try:
+            result = fn()
+            latency_ms = int((time.perf_counter() - started) * 1000.0)
+            if latency_ms > timeout_sec * 1000:
+                raise TimeoutError(f"task timeout exceeded ({latency_ms}ms > {timeout_sec * 1000}ms)")
+            task.status = "succeeded"
+            task.latency_ms = latency_ms
+            task.result_json = result if isinstance(result, dict) else {"value": result}
+            task.finished_at = datetime.now(timezone.utc)
+            task.error = None
+            db.flush()
+            return result, task
+        except Exception as exc:  # noqa: BLE001
+            last_error = str(exc)
+            task.error = last_error
+            task.latency_ms = int((time.perf_counter() - started) * 1000.0)
+            task.status = "failed" if attempt >= max_attempts else "retrying"
+            task.finished_at = datetime.now(timezone.utc)
+            db.flush()
+    raise RuntimeError(last_error or f"task {task_name} failed")
+
+
+def _execute_agent_run(
+    *,
+    db: Session,
+    payload: AgentDebateRequest,
+    created_by: str,
+) -> tuple[AgentDebateOut, AgentRun, list[AgentTaskOut]]:
+    run_started_perf = time.perf_counter()
+    run = AgentRun(
+        created_by=created_by,
+        question=payload.question,
+        locale=payload.locale,
+        status="running",
+        rounds=payload.rounds,
+        metadata_json={
+            "max_retries": payload.max_retries,
+            "timeout_sec": payload.timeout_sec,
+            "safety_override": payload.safety_override,
+        },
+        started_at=datetime.now(timezone.utc),
+    )
+    db.add(run)
+    db.flush()
+
+    if payload.safety_override and (not payload.override_reason or len(payload.override_reason.strip()) < 8):
+        raise HTTPException(status_code=400, detail="override_reason must be provided and be at least 8 characters")
+
+    created_tasks: list[AgentTaskOut] = []
+    trace_id = str(uuid4())
+    try:
+        def _run_graph():
+            drafts_local, final_local = run_hierarchical_debate(payload.question, payload.locale, payload.rounds)
+            return {"drafts": drafts_local, "final": final_local}
+
+        graph_result, graph_task = _execute_task_with_retries(
+            db=db,
+            run=run,
+            task_name="langgraph_pipeline",
+            payload={"question": payload.question, "locale": payload.locale, "rounds": payload.rounds},
+            max_attempts=max(1, min(payload.max_retries, 5)),
+            timeout_sec=max(5, min(payload.timeout_sec, 180)),
+            fn=_run_graph,
+        )
+        created_tasks.append(_to_agent_task_out(graph_task))
+        drafts: list[AgentStepDraft] = graph_result["drafts"]
+        final: dict = graph_result["final"]
+
+        def _run_safety():
+            safety_local = evaluate_agro_policy(payload.question, final["answer"], payload.locale)
+            return {
+                "policy_version": safety_local.policy_version,
+                "action": safety_local.action,
+                "level": safety_local.level,
+                "reasons": safety_local.reasons,
+                "rules_triggered": safety_local.rules_triggered,
+                "safe_alternative": safety_local.safe_alternative,
+            }
+
+        safety_data, safety_task = _execute_task_with_retries(
+            db=db,
+            run=run,
+            task_name="safety_gate",
+            payload={"question": payload.question},
+            max_attempts=1,
+            timeout_sec=max(5, min(payload.timeout_sec, 180)),
+            fn=_run_safety,
+        )
+        created_tasks.append(_to_agent_task_out(safety_task))
+        overridden = payload.safety_override and safety_data["action"] == "block"
+        effective_action = "warn" if overridden else safety_data["action"]
+        final_answer = (
+            final["answer"] if overridden else (safety_data["safe_alternative"] if safety_data["action"] == "block" else final["answer"])
+        )
+        policy_draft = AgentStepDraft(
+            agent_name="safety-policy-agent",
+            step_type="safety_policy",
+            payload={
+                "policy_version": safety_data["policy_version"],
+                "original_action": safety_data["action"],
+                "effective_action": effective_action,
+                "overridden": overridden,
+                "override_reason": payload.override_reason,
+                "level": safety_data["level"],
+                "reasons": safety_data["reasons"],
+                "rules_triggered": safety_data["rules_triggered"],
+                "original_answer": final["answer"],
+                "final_answer": final_answer,
+            },
+        )
+        all_drafts = [*drafts, policy_draft]
+
+        steps_out: list[AgentStepOut] = []
+        step_hashes: list[str] = []
+        parent_hash: str | None = None
+        parent_step_id: str | None = None
+        for draft in all_drafts:
+            step_payload = {
+                "question": payload.question,
+                "agent_name": draft.agent_name,
+                "step_type": draft.step_type,
+                "data": draft.payload,
+            }
+            step_hash = _compute_step_hash(parent_hash, step_payload)
+            step = AgentStep(
+                trace_id=trace_id,
+                parent_step_id=parent_step_id,
+                agent_name=draft.agent_name,
+                step_type=draft.step_type,
+                parent_hash=parent_hash,
+                step_hash=step_hash,
+                payload=step_payload,
+            )
+            db.add(step)
+            db.flush()
+            step_hashes.append(step_hash)
+            if payload.include_steps:
+                steps_out.append(
+                    AgentStepOut(
+                        step_id=step.id,
+                        agent_name=step.agent_name,
+                        step_type=step.step_type,
+                        step_hash=step.step_hash,
+                        parent_hash=step.parent_hash,
+                        payload=step.payload,
+                    )
+                )
+            parent_hash = step_hash
+            parent_step_id = step.id
+
+        db.add(
+            SafetyAuditLog(
+                trace_id=trace_id,
+                policy_version=safety_data["policy_version"],
+                original_action=safety_data["action"],
+                effective_action=effective_action,
+                overridden=overridden,
+                override_reason=payload.override_reason.strip() if payload.override_reason else None,
+                safety_level=safety_data["level"],
+                rules_triggered={"items": safety_data["rules_triggered"]},
+                reasons={"items": safety_data["reasons"]},
+                question=payload.question,
+                recommendation=final_answer,
+            )
+        )
+        weather_rel = _capture_tool_reliability(db, "weather")
+        ndvi_rel = _capture_tool_reliability(db, "ndvi")
+
+        trace_digest = _compute_trace_digest(step_hashes)
+        elapsed_ms = (time.perf_counter() - run_started_perf) * 1000.0
+        run.status = "succeeded"
+        run.trace_id = trace_id
+        run.trace_digest = trace_digest
+        run.final_answer = final_answer
+        run.winner = str(final["winner"])
+        run.score_a = float(final["score_a"])
+        run.score_b = float(final["score_b"])
+        run.metadata_json = {
+            **(run.metadata_json or {}),
+            "spawned_agents": [str(item) for item in final["spawned_agents"]],
+            "tool_reliability": {
+                "weather": weather_rel.reliability_score,
+                "ndvi": ndvi_rel.reliability_score,
+            },
+        }
+        run.finished_at = datetime.now(timezone.utc)
+        db.flush()
+
+        response = AgentDebateOut(
+            run_id=run.id,
+            trace_id=trace_id,
+            trace_digest=trace_digest,
+            answer=final_answer,
+            winner=final["winner"],
+            score_a=float(final["score_a"]),
+            score_b=float(final["score_b"]),
+            rounds=int(final["rounds"]),
+            spawned_agents=[str(item) for item in final["spawned_agents"]],
+            safety=AgentSafetyOut(
+                policy_version=safety_data["policy_version"],
+                level=safety_data["level"],
+                original_action=safety_data["action"],
+                effective_action=effective_action,
+                overridden=overridden,
+                override_reason=payload.override_reason.strip() if payload.override_reason else None,
+                reasons=[str(item) for item in safety_data["reasons"]],
+                rules_triggered=[str(item) for item in safety_data["rules_triggered"]],
+            ),
+            steps=steps_out,
+        )
+        _update_debate_metrics(
+            winner=str(final["winner"]),
+            latency_ms=elapsed_ms,
+            trace_id=trace_id,
+            rounds=int(final["rounds"]),
+            step_count=len(step_hashes),
+            blocked=effective_action == "block",
+            overridden=overridden,
+        )
+        return response, run, created_tasks
+    except Exception as exc:  # noqa: BLE001
+        run.status = "failed"
+        run.error = str(exc)
+        run.finished_at = datetime.now(timezone.utc)
+        db.flush()
+        db.commit()
+        raise
 
 
 def _update_debate_metrics(
@@ -1044,122 +1380,9 @@ def run_agent_debate(
     user: User = Depends(require_roles("analyst", "admin")),
 ) -> AgentDebateOut:
     check_rate_limit(request)
-    _ = user
-    started = time.perf_counter()
-    if payload.safety_override and (not payload.override_reason or len(payload.override_reason.strip()) < 8):
-        raise HTTPException(status_code=400, detail="override_reason must be provided and be at least 8 characters")
-
-    trace_id = str(uuid4())
-    drafts, final = run_hierarchical_debate(payload.question, payload.locale, payload.rounds)
-    safety = evaluate_agro_policy(payload.question, final["answer"], payload.locale)
-    overridden = payload.safety_override and safety.action == "block"
-    effective_action = "warn" if overridden else safety.action
-    final_answer = final["answer"] if overridden else (safety.safe_alternative if safety.action == "block" else final["answer"])
-    policy_draft = AgentStepDraft(
-        agent_name="safety-policy-agent",
-        step_type="safety_policy",
-        payload={
-            "policy_version": safety.policy_version,
-            "original_action": safety.action,
-            "effective_action": effective_action,
-            "overridden": overridden,
-            "override_reason": payload.override_reason,
-            "level": safety.level,
-            "reasons": safety.reasons,
-            "rules_triggered": safety.rules_triggered,
-            "original_answer": final["answer"],
-            "final_answer": final_answer,
-        },
-    )
-    all_drafts = [*drafts, policy_draft]
-
-    steps_out: list[AgentStepOut] = []
-    step_hashes: list[str] = []
-    parent_hash: str | None = None
-    parent_step_id: str | None = None
-    for draft in all_drafts:
-        step_payload = {
-            "question": payload.question,
-            "agent_name": draft.agent_name,
-            "step_type": draft.step_type,
-            "data": draft.payload,
-        }
-        step_hash = _compute_step_hash(parent_hash, step_payload)
-        step = AgentStep(
-            trace_id=trace_id,
-            parent_step_id=parent_step_id,
-            agent_name=draft.agent_name,
-            step_type=draft.step_type,
-            parent_hash=parent_hash,
-            step_hash=step_hash,
-            payload=step_payload,
-        )
-        db.add(step)
-        db.flush()
-        step_hashes.append(step_hash)
-
-        if payload.include_steps:
-            steps_out.append(
-                AgentStepOut(
-                    step_id=step.id,
-                    agent_name=step.agent_name,
-                    step_type=step.step_type,
-                    step_hash=step.step_hash,
-                    parent_hash=step.parent_hash,
-                    payload=step.payload,
-                )
-            )
-        parent_hash = step_hash
-        parent_step_id = step.id
-
-    db.add(
-        SafetyAuditLog(
-            trace_id=trace_id,
-            policy_version=safety.policy_version,
-            original_action=safety.action,
-            effective_action=effective_action,
-            overridden=overridden,
-            override_reason=payload.override_reason.strip() if payload.override_reason else None,
-            safety_level=safety.level,
-            rules_triggered={"items": safety.rules_triggered},
-            reasons={"items": safety.reasons},
-            question=payload.question,
-            recommendation=final_answer,
-        )
-    )
+    response, _, _ = _execute_agent_run(db=db, payload=payload, created_by=user.id)
     db.commit()
-    elapsed_ms = (time.perf_counter() - started) * 1000.0
-    trace_digest = _compute_trace_digest(step_hashes)
-    _update_debate_metrics(
-        winner=str(final["winner"]),
-        latency_ms=elapsed_ms,
-        trace_id=trace_id,
-        rounds=int(final["rounds"]),
-        step_count=len(step_hashes),
-        blocked=effective_action == "block",
-        overridden=overridden,
-    )
-    return AgentDebateOut(
-        trace_id=trace_id,
-        trace_digest=trace_digest,
-        answer=final_answer,
-        winner=final["winner"],
-        score_a=float(final["score_a"]),
-        score_b=float(final["score_b"]),
-        rounds=int(final["rounds"]),
-        spawned_agents=[str(item) for item in final["spawned_agents"]],
-        safety=AgentSafetyOut(
-            policy_version=safety.policy_version,
-            level=safety.level,
-            original_action=safety.action,
-            effective_action=effective_action,
-            overridden=overridden,
-            override_reason=payload.override_reason.strip() if payload.override_reason else None,
-            reasons=safety.reasons,
-            rules_triggered=safety.rules_triggered,
-        ),
-        steps=steps_out,
-    )
+    return response
 
 
 @app.websocket("/v1/ws/agents/debate")
@@ -1200,122 +1423,11 @@ async def ws_agent_debate(websocket: WebSocket) -> None:
             await websocket.close()
             return
 
-        started = time.perf_counter()
-        trace_id = str(uuid4())
-        drafts, final = run_hierarchical_debate(payload.question, payload.locale, payload.rounds)
-        safety = evaluate_agro_policy(payload.question, final["answer"], payload.locale)
-        overridden = payload.safety_override and safety.action == "block"
-        effective_action = "warn" if overridden else safety.action
-        final_answer = (
-            final["answer"] if overridden else (safety.safe_alternative if safety.action == "block" else final["answer"])
-        )
-        policy_draft = AgentStepDraft(
-            agent_name="safety-policy-agent",
-            step_type="safety_policy",
-            payload={
-                "policy_version": safety.policy_version,
-                "original_action": safety.action,
-                "effective_action": effective_action,
-                "overridden": overridden,
-                "override_reason": payload.override_reason,
-                "level": safety.level,
-                "reasons": safety.reasons,
-                "rules_triggered": safety.rules_triggered,
-                "original_answer": final["answer"],
-                "final_answer": final_answer,
-            },
-        )
-        all_drafts = [*drafts, policy_draft]
-
-        steps_out: list[AgentStepOut] = []
-        step_hashes: list[str] = []
-        parent_hash: str | None = None
-        parent_step_id: str | None = None
-        for draft in all_drafts:
-            step_payload = {
-                "question": payload.question,
-                "agent_name": draft.agent_name,
-                "step_type": draft.step_type,
-                "data": draft.payload,
-            }
-            step_hash = _compute_step_hash(parent_hash, step_payload)
-            step = AgentStep(
-                trace_id=trace_id,
-                parent_step_id=parent_step_id,
-                agent_name=draft.agent_name,
-                step_type=draft.step_type,
-                parent_hash=parent_hash,
-                step_hash=step_hash,
-                payload=step_payload,
-            )
-            db.add(step)
-            db.flush()
-            step_hashes.append(step_hash)
-
-            step_out = AgentStepOut(
-                step_id=step.id,
-                agent_name=step.agent_name,
-                step_type=step.step_type,
-                step_hash=step.step_hash,
-                parent_hash=step.parent_hash,
-                payload=step.payload,
-            )
-            steps_out.append(step_out)
-            if payload.include_steps:
-                await websocket.send_json({"type": "step", "data": step_out.model_dump()})
-
-            parent_hash = step_hash
-            parent_step_id = step.id
-
-        db.add(
-            SafetyAuditLog(
-                trace_id=trace_id,
-                policy_version=safety.policy_version,
-                original_action=safety.action,
-                effective_action=effective_action,
-                overridden=overridden,
-                override_reason=payload.override_reason.strip() if payload.override_reason else None,
-                safety_level=safety.level,
-                rules_triggered={"items": safety.rules_triggered},
-                reasons={"items": safety.reasons},
-                question=payload.question,
-                recommendation=final_answer,
-            )
-        )
+        response, _, _ = _execute_agent_run(db=db, payload=payload, created_by=user.id)
+        if payload.include_steps:
+            for step in response.steps:
+                await websocket.send_json({"type": "step", "data": step.model_dump()})
         db.commit()
-        elapsed_ms = (time.perf_counter() - started) * 1000.0
-        trace_digest = _compute_trace_digest(step_hashes)
-        _update_debate_metrics(
-            winner=str(final["winner"]),
-            latency_ms=elapsed_ms,
-            trace_id=trace_id,
-            rounds=int(final["rounds"]),
-            step_count=len(step_hashes),
-            blocked=effective_action == "block",
-            overridden=overridden,
-        )
-
-        response = AgentDebateOut(
-            trace_id=trace_id,
-            trace_digest=trace_digest,
-            answer=final_answer,
-            winner=final["winner"],
-            score_a=float(final["score_a"]),
-            score_b=float(final["score_b"]),
-            rounds=int(final["rounds"]),
-            spawned_agents=[str(item) for item in final["spawned_agents"]],
-            safety=AgentSafetyOut(
-                policy_version=safety.policy_version,
-                level=safety.level,
-                original_action=safety.action,
-                effective_action=effective_action,
-                overridden=overridden,
-                override_reason=payload.override_reason.strip() if payload.override_reason else None,
-                reasons=safety.reasons,
-                rules_triggered=safety.rules_triggered,
-            ),
-            steps=steps_out if payload.include_steps else [],
-        )
         await websocket.send_json({"type": "final", "data": response.model_dump()})
     except WebSocketDisconnect:
         return
@@ -1379,6 +1491,108 @@ def get_agent_metrics(
             avg_steps=round(avg_steps, 2),
             last_trace_id=_debate_metrics["last_trace_id"],
         )
+
+
+@app.post("/v1/agents/runs", response_model=AgentRunDetailOut)
+def create_agent_run(
+    payload: AgentDebateRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("analyst", "admin")),
+) -> AgentRunDetailOut:
+    check_rate_limit(request)
+    response, run, tasks = _execute_agent_run(db=db, payload=payload, created_by=user.id)
+    db.commit()
+    _ = response
+    return AgentRunDetailOut(run=_to_agent_run_out(run), tasks=tasks)
+
+
+@app.get("/v1/agents/runs", response_model=list[AgentRunOut])
+def list_agent_runs(
+    request: Request,
+    status: str | None = None,
+    limit: int = 20,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("analyst", "admin")),
+) -> list[AgentRunOut]:
+    check_rate_limit(request)
+    _ = user
+    q = db.query(AgentRun)
+    if status:
+        q = q.filter(AgentRun.status == status)
+    rows = q.order_by(AgentRun.created_at.desc()).limit(max(1, min(limit, 200))).all()
+    return [_to_agent_run_out(row) for row in rows]
+
+
+@app.get("/v1/agents/runs/{run_id}", response_model=AgentRunDetailOut)
+def get_agent_run(
+    run_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("analyst", "admin")),
+) -> AgentRunDetailOut:
+    check_rate_limit(request)
+    _ = user
+    run = db.get(AgentRun, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    tasks = (
+        db.query(AgentTask)
+        .filter(AgentTask.run_id == run_id)
+        .order_by(AgentTask.created_at.asc())
+        .all()
+    )
+    return AgentRunDetailOut(run=_to_agent_run_out(run), tasks=[_to_agent_task_out(task) for task in tasks])
+
+
+@app.get("/v1/agents/runs/{run_id}/tasks", response_model=list[AgentTaskOut])
+def get_agent_run_tasks(
+    run_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("analyst", "admin")),
+) -> list[AgentTaskOut]:
+    check_rate_limit(request)
+    _ = user
+    run = db.get(AgentRun, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    tasks = (
+        db.query(AgentTask)
+        .filter(AgentTask.run_id == run_id)
+        .order_by(AgentTask.created_at.asc())
+        .all()
+    )
+    return [_to_agent_task_out(task) for task in tasks]
+
+
+@app.get("/v1/agents/reliability", response_model=list[ToolReliabilityOut])
+def list_tool_reliability(
+    request: Request,
+    tool_name: str | None = None,
+    limit: int = 20,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("analyst", "admin")),
+) -> list[ToolReliabilityOut]:
+    check_rate_limit(request)
+    _ = user
+    q = db.query(ToolReliabilitySnapshot)
+    if tool_name:
+        q = q.filter(ToolReliabilitySnapshot.tool_name == tool_name)
+    rows = q.order_by(ToolReliabilitySnapshot.created_at.desc()).limit(max(1, min(limit, 200))).all()
+    return [
+        ToolReliabilityOut(
+            snapshot_id=row.id,
+            tool_name=row.tool_name,
+            success_rate=float(row.success_rate),
+            avg_latency_ms=float(row.avg_latency_ms),
+            sample_size=int(row.sample_size),
+            reliability_score=float(row.reliability_score),
+            details=row.details_json or {},
+            created_at=row.created_at,
+        )
+        for row in rows
+    ]
 
 
 @app.get("/v1/agents/safety/audit", response_model=SafetyAuditListOut)

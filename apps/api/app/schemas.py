@@ -236,6 +236,8 @@ class AgentDebateRequest(BaseModel):
     locale: str = "ru"
     include_steps: bool = True
     rounds: int = 2
+    max_retries: int = 2
+    timeout_sec: int = 45
     safety_override: bool = False
     override_reason: str | None = None
 
@@ -261,6 +263,7 @@ class AgentStepOut(BaseModel):
 
 
 class AgentDebateOut(BaseModel):
+    run_id: str | None = None
     trace_id: str
     trace_digest: str
     answer: str
@@ -271,6 +274,58 @@ class AgentDebateOut(BaseModel):
     spawned_agents: list[str] = Field(default_factory=list)
     safety: AgentSafetyOut
     steps: list[AgentStepOut] = Field(default_factory=list)
+
+
+class AgentTaskOut(BaseModel):
+    task_id: str
+    run_id: str
+    task_name: str
+    status: str
+    attempts: int
+    max_attempts: int
+    latency_ms: int | None = None
+    error: str | None = None
+    payload: dict[str, Any] = Field(default_factory=dict)
+    result: dict[str, Any] = Field(default_factory=dict)
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    created_at: datetime
+
+
+class AgentRunOut(BaseModel):
+    run_id: str
+    created_by: str
+    question: str
+    locale: str
+    status: str
+    trace_id: str | None = None
+    trace_digest: str | None = None
+    final_answer: str | None = None
+    winner: str | None = None
+    score_a: float | None = None
+    score_b: float | None = None
+    rounds: int
+    error: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    created_at: datetime
+
+
+class AgentRunDetailOut(BaseModel):
+    run: AgentRunOut
+    tasks: list[AgentTaskOut] = Field(default_factory=list)
+
+
+class ToolReliabilityOut(BaseModel):
+    snapshot_id: str
+    tool_name: str
+    success_rate: float
+    avg_latency_ms: float
+    sample_size: int
+    reliability_score: float
+    details: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
 
 
 class AgentTraceOut(BaseModel):
