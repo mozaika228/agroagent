@@ -170,6 +170,67 @@ class JobOut(BaseModel):
     error: str | None = None
 
 
+class FarmFieldCreate(BaseModel):
+    name: str
+    region: str
+    crop: str
+    area_ha: float
+    soil_type: str | None = None
+    geometry: dict[str, Any] = Field(default_factory=dict)
+
+
+class FarmFieldOut(BaseModel):
+    field_id: str
+    name: str
+    region: str
+    crop: str
+    area_ha: float
+    soil_type: str | None = None
+    geometry: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+
+
+class FieldObservationCreate(BaseModel):
+    observed_on: str
+    ndvi: float | None = None
+    soil_moisture: float | None = None
+    precip_7d_mm: float | None = None
+    temp_avg_7d_c: float | None = None
+    yield_t_ha: float | None = None
+    notes: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class FieldObservationOut(BaseModel):
+    observation_id: str
+    field_id: str
+    observed_on: str
+    ndvi: float | None = None
+    soil_moisture: float | None = None
+    precip_7d_mm: float | None = None
+    temp_avg_7d_c: float | None = None
+    yield_t_ha: float | None = None
+    notes: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+
+
+class FieldFeaturesOut(BaseModel):
+    field_id: str
+    window_size: int
+    sample_size: int
+    features: dict[str, float | int | str | None]
+    latest_observed_on: str | None = None
+
+
+class FieldFeatureSnapshotOut(BaseModel):
+    snapshot_id: str
+    field_id: str
+    window_size: int
+    features: dict[str, float | int | str | None]
+    created_at: datetime
+
+
 class AgentDebateRequest(BaseModel):
     question: str
     locale: str = "ru"

@@ -1,7 +1,7 @@
-﻿from datetime import datetime
+from datetime import date, datetime
 from uuid import uuid4
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import JSON, Date, DateTime, Float, ForeignKey, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from pgvector.sqlalchemy import Vector
@@ -147,3 +147,44 @@ class SafetyAuditLog(Base):
     question: Mapped[str] = mapped_column(Text, nullable=False)
     recommendation: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class FarmField(Base):
+    __tablename__ = "farm_fields"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=gen_id)
+    owner_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    region: Mapped[str] = mapped_column(String(120), nullable=False)
+    crop: Mapped[str] = mapped_column(String(80), nullable=False)
+    area_ha: Mapped[float] = mapped_column(Float, nullable=False)
+    soil_type: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    geometry_json: Mapped[dict] = mapped_column("geometry", JSONType, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class FieldObservation(Base):
+    __tablename__ = "field_observations"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=gen_id)
+    field_id: Mapped[str] = mapped_column(String(36), ForeignKey("farm_fields.id", ondelete="CASCADE"), index=True, nullable=False)
+    observed_on: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    ndvi: Mapped[float | None] = mapped_column(Float, nullable=True)
+    soil_moisture: Mapped[float | None] = mapped_column(Float, nullable=True)
+    precip_7d_mm: Mapped[float | None] = mapped_column(Float, nullable=True)
+    temp_avg_7d_c: Mapped[float | None] = mapped_column(Float, nullable=True)
+    yield_t_ha: Mapped[float | None] = mapped_column(Float, nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    metadata_json: Mapped[dict] = mapped_column("metadata", JSONType, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class FieldFeatureSnapshot(Base):
+    __tablename__ = "field_feature_snapshots"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=gen_id)
+    field_id: Mapped[str] = mapped_column(String(36), ForeignKey("farm_fields.id", ondelete="CASCADE"), index=True, nullable=False)
+    window_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    features_json: Mapped[dict] = mapped_column("features", JSONType, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+

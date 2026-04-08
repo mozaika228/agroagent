@@ -20,6 +20,7 @@ AI-agent platform for agriculture in West Kazakhstan. Built with LangGraph for r
 - WebSocket streaming debate updates (real-time UI)
 - Telegram bot interface (prod-ready)
 - Prometheus + Grafana docker-compose (latency, token usage, success rate)
+- Domain data layer: farm fields, seasonal observations, engineered agronomic feature snapshots
 - Safety policy layer for debate answers (`allow/warn/block`) with explainable triggered rules
 - CI with web lint/build + API tests + coverage XML artifact
 
@@ -104,6 +105,12 @@ curl -X POST http://localhost:8000/v1/rag/compare \
 - `POST /v1/chat/messages`
 - `POST /v1/documents`
 - `GET /v1/documents/{id}`
+- `POST /v1/fields`
+- `GET /v1/fields`
+- `POST /v1/fields/{field_id}/observations`
+- `GET /v1/fields/{field_id}/observations`
+- `GET /v1/fields/{field_id}/features`
+- `POST /v1/fields/{field_id}/features/snapshot`
 - `POST /v1/rag/query`
 - `POST /v1/rag/compare`
 - `POST /v1/agents/debate`

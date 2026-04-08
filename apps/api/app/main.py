@@ -1,4 +1,4 @@
-﻿from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 import logging
@@ -21,7 +21,20 @@ from .auth import create_access_token, get_current_user, hash_password, require_
 from .agents.pipeline import AgentStepDraft, run_hierarchical_debate
 from .config import settings
 from .db import SessionLocal, get_db
-from .models import AgentStep, ChatMessage, ChatSession, Document, DocumentChunk, EvalRun, Job, ToolCall, User
+from .models import (
+    AgentStep,
+    ChatMessage,
+    ChatSession,
+    Document,
+    DocumentChunk,
+    EvalRun,
+    FarmField,
+    FieldFeatureSnapshot,
+    FieldObservation,
+    Job,
+    ToolCall,
+    User,
+)
 from .models import SafetyAuditLog
 from .llm import get_llm_metrics
 from .rag import (
@@ -58,6 +71,12 @@ from .schemas import (
     EvalRunItem,
     EvalRunListOut,
     EvalRunOut,
+    FarmFieldCreate,
+    FarmFieldOut,
+    FieldFeatureSnapshotOut,
+    FieldFeaturesOut,
+    FieldObservationCreate,
+    FieldObservationOut,
     JobOut,
     NDVIOut,
     RagCompareCreate,
@@ -338,6 +357,65 @@ def _profile_params(profile: str) -> dict[str, float | int]:
             "lexical_k": max(60, settings.retriever_lexical_k),
         }
     return base
+
+
+def _parse_iso_date(value: str) -> date:
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").date()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="date must be in YYYY-MM-DD format") from exc
+
+
+def _mean(values: list[float]) -> float | None:
+    if not values:
+        return None
+    return float(sum(values) / len(values))
+
+
+def _compute_field_features(observations: list[FieldObservation], window_size: int) -> dict[str, float | int | str | None]:
+    windowed = observations[:window_size]
+    ndvi_vals = [float(o.ndvi) for o in windowed if o.ndvi is not None]
+    moisture_vals = [float(o.soil_moisture) for o in windowed if o.soil_moisture is not None]
+    precip_vals = [float(o.precip_7d_mm) for o in windowed if o.precip_7d_mm is not None]
+    temp_vals = [float(o.temp_avg_7d_c) for o in windowed if o.temp_avg_7d_c is not None]
+    yield_vals = [float(o.yield_t_ha) for o in windowed if o.yield_t_ha is not None]
+
+    ndvi_trend = None
+    if len(ndvi_vals) >= 2:
+        ndvi_trend = ndvi_vals[0] - ndvi_vals[-1]
+
+    moisture_mean = _mean(moisture_vals)
+    precip_total = float(sum(precip_vals)) if precip_vals else None
+    temp_mean = _mean(temp_vals)
+
+    drought_score = None
+    if moisture_mean is not None and precip_total is not None:
+        dryness = max(0.0, 1.0 - (moisture_mean / 100.0))
+        rain_penalty = max(0.0, 1.0 - min(1.0, precip_total / 35.0))
+        drought_score = round((0.65 * dryness) + (0.35 * rain_penalty), 4)
+
+    stress_label = "unknown"
+    if drought_score is not None:
+        if drought_score >= 0.7:
+            stress_label = "high"
+        elif drought_score >= 0.4:
+            stress_label = "medium"
+        else:
+            stress_label = "low"
+
+    return {
+        "window_size": window_size,
+        "sample_size": len(windowed),
+        "ndvi_mean": _mean(ndvi_vals),
+        "ndvi_trend": ndvi_trend,
+        "soil_moisture_mean": moisture_mean,
+        "precip_7d_total_mm": precip_total,
+        "temp_avg_7d_mean_c": temp_mean,
+        "yield_last_t_ha": yield_vals[0] if yield_vals else None,
+        "yield_rolling_mean_t_ha": _mean(yield_vals),
+        "drought_risk_score": drought_score,
+        "stress_label": stress_label,
+    }
 
 
 def _retrieve_chunks(db: Session, question: str, top_k: int = 5, profile: str = "balanced") -> list[dict]:
@@ -656,6 +734,219 @@ def get_document(
         raise HTTPException(status_code=403, detail="forbidden")
     chunks_count = db.query(DocumentChunk).filter(DocumentChunk.document_id == document_id).count()
     return DocumentOut(document_id=document_id, status=doc.status, chunks=chunks_count)
+
+
+@app.post("/v1/fields", response_model=FarmFieldOut)
+def create_field(
+    payload: FarmFieldCreate,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("farmer", "analyst", "admin")),
+) -> FarmFieldOut:
+    check_rate_limit(request)
+    field = FarmField(
+        owner_id=user.id,
+        name=payload.name.strip(),
+        region=payload.region.strip(),
+        crop=payload.crop.strip(),
+        area_ha=float(payload.area_ha),
+        soil_type=payload.soil_type.strip() if payload.soil_type else None,
+        geometry_json=dict(payload.geometry or {}),
+    )
+    db.add(field)
+    db.commit()
+    db.refresh(field)
+    return FarmFieldOut(
+        field_id=field.id,
+        name=field.name,
+        region=field.region,
+        crop=field.crop,
+        area_ha=float(field.area_ha),
+        soil_type=field.soil_type,
+        geometry=field.geometry_json or {},
+        created_at=field.created_at,
+    )
+
+
+@app.get("/v1/fields", response_model=list[FarmFieldOut])
+def list_fields(
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("farmer", "analyst", "admin")),
+) -> list[FarmFieldOut]:
+    check_rate_limit(request)
+    q = db.query(FarmField).order_by(FarmField.created_at.desc())
+    if user.role == "farmer":
+        q = q.filter(FarmField.owner_id == user.id)
+    rows = q.limit(200).all()
+    return [
+        FarmFieldOut(
+            field_id=row.id,
+            name=row.name,
+            region=row.region,
+            crop=row.crop,
+            area_ha=float(row.area_ha),
+            soil_type=row.soil_type,
+            geometry=row.geometry_json or {},
+            created_at=row.created_at,
+        )
+        for row in rows
+    ]
+
+
+@app.post("/v1/fields/{field_id}/observations", response_model=FieldObservationOut)
+def create_field_observation(
+    field_id: str,
+    payload: FieldObservationCreate,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("farmer", "analyst", "admin")),
+) -> FieldObservationOut:
+    check_rate_limit(request)
+    field = db.get(FarmField, field_id)
+    if field is None:
+        raise HTTPException(status_code=404, detail="field not found")
+    if user.role == "farmer" and field.owner_id != user.id:
+        raise HTTPException(status_code=403, detail="forbidden")
+
+    obs = FieldObservation(
+        field_id=field_id,
+        observed_on=_parse_iso_date(payload.observed_on),
+        ndvi=payload.ndvi,
+        soil_moisture=payload.soil_moisture,
+        precip_7d_mm=payload.precip_7d_mm,
+        temp_avg_7d_c=payload.temp_avg_7d_c,
+        yield_t_ha=payload.yield_t_ha,
+        notes=payload.notes,
+        metadata_json=dict(payload.metadata or {}),
+    )
+    db.add(obs)
+    db.commit()
+    db.refresh(obs)
+    return FieldObservationOut(
+        observation_id=obs.id,
+        field_id=obs.field_id,
+        observed_on=obs.observed_on.isoformat(),
+        ndvi=obs.ndvi,
+        soil_moisture=obs.soil_moisture,
+        precip_7d_mm=obs.precip_7d_mm,
+        temp_avg_7d_c=obs.temp_avg_7d_c,
+        yield_t_ha=obs.yield_t_ha,
+        notes=obs.notes,
+        metadata=obs.metadata_json or {},
+        created_at=obs.created_at,
+    )
+
+
+@app.get("/v1/fields/{field_id}/observations", response_model=list[FieldObservationOut])
+def list_field_observations(
+    field_id: str,
+    request: Request,
+    limit: int = 50,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("farmer", "analyst", "admin")),
+) -> list[FieldObservationOut]:
+    check_rate_limit(request)
+    field = db.get(FarmField, field_id)
+    if field is None:
+        raise HTTPException(status_code=404, detail="field not found")
+    if user.role == "farmer" and field.owner_id != user.id:
+        raise HTTPException(status_code=403, detail="forbidden")
+
+    rows = (
+        db.query(FieldObservation)
+        .filter(FieldObservation.field_id == field_id)
+        .order_by(FieldObservation.observed_on.desc(), FieldObservation.created_at.desc())
+        .limit(max(1, min(limit, 365)))
+        .all()
+    )
+    return [
+        FieldObservationOut(
+            observation_id=row.id,
+            field_id=row.field_id,
+            observed_on=row.observed_on.isoformat(),
+            ndvi=row.ndvi,
+            soil_moisture=row.soil_moisture,
+            precip_7d_mm=row.precip_7d_mm,
+            temp_avg_7d_c=row.temp_avg_7d_c,
+            yield_t_ha=row.yield_t_ha,
+            notes=row.notes,
+            metadata=row.metadata_json or {},
+            created_at=row.created_at,
+        )
+        for row in rows
+    ]
+
+
+@app.get("/v1/fields/{field_id}/features", response_model=FieldFeaturesOut)
+def get_field_features(
+    field_id: str,
+    request: Request,
+    window_size: int = 8,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("farmer", "analyst", "admin")),
+) -> FieldFeaturesOut:
+    check_rate_limit(request)
+    field = db.get(FarmField, field_id)
+    if field is None:
+        raise HTTPException(status_code=404, detail="field not found")
+    if user.role == "farmer" and field.owner_id != user.id:
+        raise HTTPException(status_code=403, detail="forbidden")
+
+    observations = (
+        db.query(FieldObservation)
+        .filter(FieldObservation.field_id == field_id)
+        .order_by(FieldObservation.observed_on.desc(), FieldObservation.created_at.desc())
+        .limit(max(2, min(window_size, 52)))
+        .all()
+    )
+    features = _compute_field_features(observations, max(2, min(window_size, 52)))
+    latest_observed_on = observations[0].observed_on.isoformat() if observations else None
+    return FieldFeaturesOut(
+        field_id=field_id,
+        window_size=int(features["window_size"] or window_size),
+        sample_size=int(features["sample_size"] or 0),
+        features=features,
+        latest_observed_on=latest_observed_on,
+    )
+
+
+@app.post("/v1/fields/{field_id}/features/snapshot", response_model=FieldFeatureSnapshotOut)
+def create_field_feature_snapshot(
+    field_id: str,
+    request: Request,
+    window_size: int = 8,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("analyst", "admin")),
+) -> FieldFeatureSnapshotOut:
+    check_rate_limit(request)
+    _ = user
+    field = db.get(FarmField, field_id)
+    if field is None:
+        raise HTTPException(status_code=404, detail="field not found")
+    observations = (
+        db.query(FieldObservation)
+        .filter(FieldObservation.field_id == field_id)
+        .order_by(FieldObservation.observed_on.desc(), FieldObservation.created_at.desc())
+        .limit(max(2, min(window_size, 52)))
+        .all()
+    )
+    features = _compute_field_features(observations, max(2, min(window_size, 52)))
+    snapshot = FieldFeatureSnapshot(
+        field_id=field_id,
+        window_size=max(2, min(window_size, 52)),
+        features_json=features,
+    )
+    db.add(snapshot)
+    db.commit()
+    db.refresh(snapshot)
+    return FieldFeatureSnapshotOut(
+        snapshot_id=snapshot.id,
+        field_id=snapshot.field_id,
+        window_size=snapshot.window_size,
+        features=snapshot.features_json or {},
+        created_at=snapshot.created_at,
+    )
 
 
 @app.post("/v1/rag/query", response_model=RagQueryOut)
